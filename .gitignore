@@ -1,0 +1,9 @@
+# Bytecompiled / cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+
+# IDE/workspace files
+Python.code-workspace
