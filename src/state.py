@@ -29,6 +29,8 @@ class AppState:
     show_help: bool = True
     pan_step: int = PAN_STEP
     keystone_step: int = KEYSTONE_STEP
+    available_cameras: list[int] = field(default_factory=list)
+    current_camera_index: int = 0
 
     def reset_keystone(self) -> None:
         self.keystone_src = default_keystone(self.width, self.height)

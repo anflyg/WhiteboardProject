@@ -3,3 +3,4 @@ numpy
 pytesseract
 easyocr
 pyttsx3
+PySide6

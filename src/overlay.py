@@ -1,8 +1,9 @@
 import cv2
 
 HELP_LINES = [
-    "h: toggle help",
-    "q: quit",
+    "Shortcuts (Qt):",
+    "h: toggle help overlay",
+    "q: quit application",
     "0: reset view (zoom/center/keystone)",
     "+/- or =/_: zoom in/out",
     "arrows or WASD: pan",
@@ -10,7 +11,8 @@ HELP_LINES = [
     "r: reset keystone to full frame",
     "1-4: select keystone corner (1=top-left, clockwise)",
     "i/j/k/l: nudge selected corner (up/left/down/right)",
-    "m: mouse mode, click 4 corners (valfri ordning)",
+    "m: mouse corner mode, click 4 corners",
+    "Camera/View/Help menus finns i menyraden",
 ]
 
 

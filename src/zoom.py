@@ -9,6 +9,7 @@ def crop_zoom(frame: np.ndarray, center: tuple[int, int], scale: float) -> np.nd
     """
     Crop around center with a given scale (>1 zooms in).
     """
+    #spara undan bildens höjd och bredd och center-koordinaterna
     h, w = frame.shape[:2]
     cx, cy = center
     scale = max(scale, 1.0)  # undvik zoom ut mindre än original
