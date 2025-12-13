@@ -4,13 +4,27 @@ This replaces the previous cv2.namedWindow approach and uses a native menubar.
 """
 from __future__ import annotations
 
+import json
+import re
 import sys
+import time
+from datetime import datetime
+from shutil import rmtree, which
+from pathlib import Path
 from typing import Optional
 
 import cv2
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QAction, QImage, QKeySequence, QPixmap
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMessageBox
+from PySide6.QtCore import QEvent, QTimer, Qt
+from PySide6.QtGui import QAction, QActionGroup, QImage, QKeySequence, QPixmap
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QInputDialog,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+)
 
 from src.capture import list_available_cameras, open_camera
 from src.handlers import on_mouse
@@ -18,6 +32,16 @@ from src.keystone import apply_keystone
 from src.overlay import draw_corner_markers, draw_help_overlay
 from src.state import AppState, default_keystone
 from src.zoom import crop_zoom
+from src.ai_pipeline import (
+    BoardState,
+    FrameExtractor,
+    load_config,
+    make_transcriber,
+    AudioRecorder,
+    render_markdown_document,
+    render_frames_listing,
+    AlignBlock,
+)
 
 
 class VideoLabel(QLabel):
@@ -70,8 +94,40 @@ class WhiteboardWindow(QMainWindow):
         self.cap = None
         self.state: Optional[AppState] = None
 
+        # AI pipeline stubs (no heavy processing yet)
+        self.ai_config = load_config("quick")
+        self.ai_running = False
+        self.ai_started_at: Optional[float] = None
+        self.frame_extractor = FrameExtractor(
+            ssim_threshold=self.ai_config.ssim_threshold,
+            fallback_interval_seconds=self.ai_config.fallback_interval_seconds,
+            delta_threshold=getattr(self.ai_config, "frame_delta_threshold", 8.0),
+            min_interval_seconds=getattr(self.ai_config, "min_frame_interval_seconds", 3.0),
+        )
+        self.board_state = BoardState(
+            rows=self.ai_config.tile_rows,
+            cols=self.ai_config.tile_cols,
+            stabilization_seconds=self.ai_config.stabilization_seconds,
+        )
+        self.transcriber = make_transcriber(self.ai_config.whisper_model, language=getattr(self.ai_config, "whisper_language", None))
+        self.transcriber_is_dummy = self.transcriber.__class__.__name__ == "DummyTranscriber"
+        self.transcriber_error = getattr(self.transcriber, "error", None)
+        self.audio_recorder = AudioRecorder()
+        self.session_dir: Optional[Path] = None
+        self.frames_dir: Optional[Path] = None
+        self.manifest_path: Optional[Path] = None
+        self.manifest: dict = {}
+        self.frame_count: int = 0
+        self.audio_path: Optional[Path] = None
+        self.ffmpeg_available: bool = self._check_ffmpeg()
+
+        self._last_processed_frame = None
+
         self.video_label = VideoLabel(self._handle_mouse_click)
+        self.video_label.installEventFilter(self)
         self.setCentralWidget(self.video_label)
+
+        self._init_capture_button()
 
         self._init_camera(camera_index)
         self._build_menus()
@@ -103,12 +159,52 @@ class WhiteboardWindow(QMainWindow):
             self.state.available_cameras.insert(0, camera_index)
         self.statusBar().showMessage(f"Camera {camera_index}")
 
+    def _init_capture_button(self) -> None:
+        self.capture_button = QPushButton(self.video_label)
+        self.capture_button.setObjectName("captureButton")
+        self.capture_button.setFixedSize(72, 72)
+        self.capture_button.setCursor(Qt.PointingHandCursor)
+        self.capture_button.setToolTip("Ta foto (mellanslag eller Ctrl+P)")
+        self.capture_button.setAccessibleName("Ta foto (stillbild)")
+        self.capture_button.setText("CAM")
+        self._style_capture_button()
+        self.capture_button.clicked.connect(self._capture_frame)
+        self._position_capture_button()
+
+        # Recording button (continuous)
+        self.record_button = QPushButton(self.video_label)
+        self.record_button.setObjectName("recordButton")
+        self.record_button.setFixedSize(72, 72)
+        self.record_button.setCursor(Qt.PointingHandCursor)
+        self.record_button.setToolTip("Starta eller stoppa inspelning (Ctrl+Shift+S/E)")
+        self.record_button.setAccessibleName("Starta eller stoppa inspelning")
+        self.record_button.setText("REC")
+        self.record_button.clicked.connect(self._toggle_ai_recording)
+        self._style_record_button(active=False)
+        self._position_record_button()
+
     def _build_menus(self) -> None:
         menubar = self.menuBar()
 
         # Camera menu
         self.camera_menu = menubar.addMenu("Camera")
         self._refresh_camera_menu()
+
+        # Capture menu
+        capture_menu = menubar.addMenu("Capture")
+        self._add_action(capture_menu, "Take Photo", "Ctrl+P", self._capture_frame)
+        self._add_action(capture_menu, "Choose Save Folder...", "", self._choose_capture_dir)
+        self._add_action(capture_menu, "Set Subject Prefix...", "", self._set_capture_prefix)
+        format_menu = capture_menu.addMenu("Image Format")
+        self.format_group = QActionGroup(self)
+        self.format_group.setExclusive(True)
+        for fmt in ("jpg", "png"):
+            action = QAction(fmt.upper(), self)
+            action.setCheckable(True)
+            action.setChecked(fmt == self.state.capture_format)
+            action.triggered.connect(lambda checked, f=fmt: self._set_capture_format(f))
+            self.format_group.addAction(action)
+            format_menu.addAction(action)
 
         # View menu
         view_menu = menubar.addMenu("View")
@@ -138,9 +234,15 @@ class WhiteboardWindow(QMainWindow):
                 lambda i=idx: self._select_corner(i),
             )
 
+        # AI menu (start/stop stub)
+        ai_menu = menubar.addMenu("AI")
+        self._add_action(ai_menu, "Start AI (quick mode)", "Ctrl+Shift+S", self._start_ai)
+        self._add_action(ai_menu, "Stop AI", "Ctrl+Shift+E", self._stop_ai)
+
         # Help menu
         help_menu = menubar.addMenu("Help")
         self._add_action(help_menu, "Show Help Overlay", "H", self._toggle_help)
+        self._add_action(help_menu, "FFmpeg install guide", "", self._show_ffmpeg_help)
         self._add_action(help_menu, "Quit", "Q", self.close)
 
     def _add_action(self, menu, title: str, shortcut: str, handler):
@@ -150,6 +252,92 @@ class WhiteboardWindow(QMainWindow):
         action.triggered.connect(handler)
         menu.addAction(action)
         return action
+
+    def _style_capture_button(self) -> None:
+        # Mimic a minimal camera shutter button
+        self.capture_button.setStyleSheet(
+            """
+            QPushButton#captureButton {
+                background-color: #a00000;
+                border: 4px solid #ff5f5f;
+                border-radius: 36px;
+            }
+            QPushButton#captureButton:hover {
+                background-color: #b30000;
+                border-color: #ff8a8a;
+            }
+            QPushButton#captureButton:pressed {
+                background-color: #7a0000;
+                border-color: #ffb3b3;
+            }
+            QPushButton#captureButton {
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            """
+        )
+
+    def _style_record_button(self, active: bool) -> None:
+        if active:
+            style = """
+            QPushButton#recordButton {
+                background-color: #d00000;
+                border: 4px solid #ff8080;
+                border-radius: 36px;
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton#recordButton:hover {
+                background-color: #e00000;
+                border-color: #ff9a9a;
+            }
+            QPushButton#recordButton:pressed {
+                background-color: #900000;
+                border-color: #ffbfbf;
+            }
+            """
+        else:
+            style = """
+            QPushButton#recordButton {
+                background-color: #444;
+                border: 4px solid #777;
+                border-radius: 36px;
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton#recordButton:hover {
+                background-color: #555;
+                border-color: #888;
+            }
+            QPushButton#recordButton:pressed {
+                background-color: #333;
+                border-color: #aaa;
+            }
+            """
+        self.record_button.setStyleSheet(style)
+
+    def _position_capture_button(self) -> None:
+        if not getattr(self, "capture_button", None):
+            return
+        margin = 16
+        btn_size = self.capture_button.size()
+        x = max(margin, self.video_label.width() - btn_size.width() - margin)
+        y = max(margin, self.video_label.height() - btn_size.height() - margin)
+        self.capture_button.move(x, y)
+        self.capture_button.raise_()
+
+    def _position_record_button(self) -> None:
+        if not getattr(self, "record_button", None):
+            return
+        margin = 16
+        btn_size = self.record_button.size()
+        x = margin
+        y = max(margin, self.video_label.height() - btn_size.height() - margin)
+        self.record_button.move(x, y)
+        self.record_button.raise_()
 
     def _refresh_camera_menu(self) -> None:
         self.camera_menu.clear()
@@ -189,6 +377,7 @@ class WhiteboardWindow(QMainWindow):
 
         frame = apply_keystone(frame, self.state.keystone_src, self.state.keystone_enabled, (self.state.width, self.state.height))
         frame = crop_zoom(frame, self.state.center, self.state.zoom_scale)
+        self._last_processed_frame = frame.copy()
         if self.state.show_help:
             frame = draw_help_overlay(frame)
         if self.state.mouse_points:
@@ -203,6 +392,27 @@ class WhiteboardWindow(QMainWindow):
         pix = QPixmap.fromImage(qimg)
         self.video_label.setPixmap(pix.scaled(self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         self.state.clamp_center()
+
+        # AI pipeline stub hook: check for frame events while running
+        if self.ai_running:
+            now = time.monotonic()
+            rel_ts = now - (self.ai_started_at or now)
+            event = self.frame_extractor.process_frame(self._last_processed_frame, rel_ts)
+            if event:
+                saved_path = self._save_frame_event(event, self._last_processed_frame)
+                if saved_path:
+                    self._append_manifest_frame(
+                        event.timestamp,
+                        saved_path,
+                        reason=event.reason,
+                        delta=event.delta,
+                        occluded=event.occluded,
+                    )
+                self.board_state.update_frame(rel_ts)
+                self.statusBar().showMessage(
+                    f"Inspelning pågår: {self.frame_count} bild(er) sparade"
+                    + ("" if self.audio_recorder.backend_available else " (ingen ljud-backend)")
+                )
 
     def keyPressEvent(self, event) -> None:
         key = event.key()
@@ -220,6 +430,8 @@ class WhiteboardWindow(QMainWindow):
             self._pan(0, self.state.pan_step)
         elif key == Qt.Key_0:
             self._reset_view()
+        elif key == Qt.Key_Space:
+            self._capture_frame()
         elif key == Qt.Key_H:
             self._toggle_help()
         elif key == Qt.Key_T:
@@ -285,11 +497,303 @@ class WhiteboardWindow(QMainWindow):
             self.state.keystone_src[idx, 1] = min(self.state.height - 1, self.state.keystone_src[idx, 1] + self.state.keystone_step)
         self.state.keystone_enabled = True
 
+    def _capture_frame(self) -> None:
+        if not self.state:
+            QMessageBox.warning(self, "Foto", "App-tillstånd saknas. Försök igen.")
+            return
+
+        if self._last_processed_frame is None:
+            QMessageBox.warning(self, "Foto", "Ingen bild att spara ännu.")
+            return
+
+        save_dir = self._ensure_capture_dir()
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        prefix = self._safe_prefix(self.state.capture_prefix)
+        name_parts = [part for part in (prefix, f"whiteboard-{timestamp}") if part]
+        filename = "_".join(name_parts) + f".{self.state.capture_format}"
+        filepath = save_dir / filename
+
+        if cv2.imwrite(str(filepath), self._last_processed_frame):
+            self.statusBar().showMessage(f"Sparade foto: {filepath}")
+        else:
+            QMessageBox.warning(self, "Foto", "Kunde inte spara bilden.")
+
+    def _ensure_capture_dir(self) -> Path:
+        directory = self.state.capture_dir or Path.home() / "Documents" / "WhiteboardShots"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def _safe_prefix(self, text: str) -> str:
+        if not text:
+            return ""
+        cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", text.strip())
+        return cleaned.strip("-")
+
+    def _choose_capture_dir(self) -> None:
+        start_dir = str(self.state.capture_dir) if self.state.capture_dir else str(Path.home())
+        selected = QFileDialog.getExistingDirectory(self, "Välj mapp för bilder", start_dir)
+        if selected:
+            self.state.capture_dir = Path(selected)
+            self.statusBar().showMessage(f"Sparar bilder i: {self.state.capture_dir}")
+
+    def _set_capture_prefix(self) -> None:
+        text, ok = QInputDialog.getText(
+            self,
+            "Ämne / föreläsning",
+            "Prefix för filnamn (valfritt):",
+            text=self.state.capture_prefix,
+        )
+        if ok:
+            self.state.capture_prefix = text.strip()
+            preview = self._safe_prefix(self.state.capture_prefix)
+            example = f"{preview + '_' if preview else ''}whiteboard-YYYY-MM-DD_HH-MM-SS.{self.state.capture_format}"
+            self.statusBar().showMessage(f"Prefix sparat. Exempel: {example}")
+
+    def _set_capture_format(self, fmt: str) -> None:
+        fmt = fmt.lower()
+        if fmt not in ("jpg", "png"):
+            return
+        self.state.capture_format = fmt
+        if hasattr(self, "format_group"):
+            for action in self.format_group.actions():
+                action.setChecked(action.text().lower() == fmt)
+
     def _handle_mouse_click(self, x: int, y: int) -> None:
         if not self.state.collecting_points:
             return
         # Reuse existing click logic from handlers
         on_mouse(self.state, cv2.EVENT_LBUTTONDOWN, x, y, None, None)
+
+    # --- AI control (stub) ---
+    def _start_ai(self) -> None:
+        if self.ai_running:
+            self.statusBar().showMessage("AI är redan igång (stub)")
+            return
+        self._start_new_session()
+        self.ai_running = True
+        self.ai_started_at = time.monotonic()
+        self._start_audio()
+        if not self.ffmpeg_available:
+            self.statusBar().showMessage("FFmpeg saknas – installera via hjälp-menyn för transkription.")
+        if self.transcriber_is_dummy:
+            extra = f" (fel: {self.transcriber_error})" if self.transcriber_error else ""
+            self.statusBar().showMessage(f"Whisper saknas/laddas ej{extra}; ingen transkription.")
+        self.statusBar().showMessage(f"AI startad i läge: {self.ai_config.name}")
+        self._style_record_button(active=True)
+
+    def _stop_ai(self) -> None:
+        if not self.ai_running:
+            self.statusBar().showMessage("AI är redan stoppad")
+            return
+        self.ai_running = False
+        self.board_state.close_versions(time.monotonic() - (self.ai_started_at or 0))
+        self._stop_audio()
+        self._postprocess_session()
+        self._finalize_manifest()
+        self.statusBar().showMessage("AI stoppad (export klar)")
+        self._style_record_button(active=False)
+
+    def _toggle_ai_recording(self) -> None:
+        if self.ai_running:
+            self._stop_ai()
+        else:
+            self._start_ai()
+
+    def _start_audio(self) -> None:
+        if not self.session_dir:
+            return
+        self.audio_path = self.session_dir / "audio.wav"
+        ok = self.audio_recorder.start(self.audio_path)
+        if not ok:
+            self.statusBar().showMessage("Ljud-backend saknas, spelar inte in ljud")
+        elif self.transcriber_is_dummy:
+            self.statusBar().showMessage(
+                f"Ljud inspelas med {self.audio_recorder.backend_name}, men Whisper saknas/ffmpeg saknas (ingen transkription)"
+            )
+        elif not self.ffmpeg_available:
+            self.statusBar().showMessage(
+                f"Ljud inspelas med {self.audio_recorder.backend_name}, men ffmpeg saknas (installera via hjälp-menyn)"
+            )
+        else:
+            self.statusBar().showMessage(f"Ljud inspelas med {self.audio_recorder.backend_name}")
+
+    def _stop_audio(self) -> None:
+        try:
+            self.audio_recorder.stop()
+        except Exception:
+            pass
+
+    def _postprocess_session(self) -> None:
+        """
+        Minimal postprocess: transcribe audio (stub), align frames, render markdown.
+        """
+        export_root = (Path.cwd() / self.ai_config.export_dir).resolve()
+        run_id = self.manifest.get("run_id", datetime.now().strftime("run-%Y%m%d-%H%M%S"))
+        run_export_dir = export_root / run_id
+        frames_export_dir = run_export_dir / "frames"
+        run_export_dir.mkdir(parents=True, exist_ok=True)
+
+        md_path = run_export_dir / f"{run_id}.md"
+
+        transcript = []
+        transcript_error = None
+        if self.audio_path and self.audio_path.exists() and self.audio_path.stat().st_size > 0:
+            try:
+                transcript = self.transcriber.transcribe(self.audio_path)
+            except Exception as exc:
+                transcript_error = str(exc)
+        else:
+            transcript_error = "Ingen ljudfil inspelad eller filen är tom."
+
+        frames = self.manifest.get("frames", [])
+        copied_frames = []
+        if self.frames_dir and self.frames_dir.exists():
+            frames_export_dir.mkdir(parents=True, exist_ok=True)
+            for f in frames:
+                src = (self.frames_dir / Path(f["path"]).name).resolve()
+                dst = frames_export_dir / src.name
+                try:
+                    if src.exists():
+                        dst.write_bytes(src.read_bytes())
+                        copied_frames.append({"timestamp": f.get("timestamp", 0), "path": str(dst.relative_to(run_export_dir))})
+                except Exception:
+                    pass
+        else:
+            copied_frames = frames
+
+        # Copy audio to export for debugging/fallback
+        exported_audio = None
+        if self.audio_path and self.audio_path.exists():
+            exported_audio = run_export_dir / self.audio_path.name
+            try:
+                exported_audio.write_bytes(self.audio_path.read_bytes())
+            except Exception:
+                exported_audio = None
+
+        if transcript:
+            blocks = []
+            for seg in transcript:
+                nearest_img = None
+                if copied_frames:
+                    nearest_img = min(copied_frames, key=lambda f: abs(f.get("timestamp", 0) - seg.start))
+                imgs = []
+                if nearest_img:
+                    img_ts = nearest_img.get("timestamp", 0)
+                    if abs(img_ts - seg.start) <= getattr(self.ai_config, "align_image_window_seconds", 5.0):
+                        imgs = [nearest_img["path"]]
+                blocks.append(AlignBlock(start=seg.start, end=seg.end, speech_text=seg.text, board_text=[], board_images=imgs))
+            render_markdown_document(blocks, md_path)
+        else:
+            # Fallback: just list frames.
+            render_frames_listing(copied_frames, md_path)
+            if transcript_error:
+                try:
+                    with md_path.open("a", encoding="utf-8") as f:
+                        f.write("\n\n_No transcript available: " + transcript_error + "_\n")
+                except Exception:
+                    pass
+            elif self.transcriber_is_dummy:
+                try:
+                    with md_path.open("a", encoding="utf-8") as f:
+                        detail = f" ({self.transcriber_error})" if self.transcriber_error else ""
+                        f.write(f"\n\n_No transcript available: Whisper saknas eller kunde inte laddas{detail}._\n")
+                except Exception:
+                    pass
+
+        # Append metadata
+        try:
+            with md_path.open("a", encoding="utf-8") as f:
+                f.write("\n\n---\n")
+                f.write(f"Audio backend: {self.audio_recorder.backend_name}\n")
+                f.write(f"Transcriber: {'dummy' if self.transcriber_is_dummy else 'whisper'}\n")
+                if exported_audio:
+                    f.write(f"Audio file: {exported_audio.name}\n")
+        except Exception:
+            pass
+
+        # Cleanup intermediates if configured
+        if not self.ai_config.keep_intermediates and self.session_dir:
+            try:
+                rmtree(self.session_dir)
+            except Exception:
+                pass
+
+    # --- Session / manifest helpers ---
+    def _start_new_session(self) -> None:
+        # Create session folder and manifest under configured capture dir
+        run_id = datetime.now().strftime("run-%Y%m%d-%H%M%S")
+        base_dir = (Path.cwd() / self.ai_config.capture_dir).resolve()
+        self.session_dir = base_dir / run_id
+        self.frames_dir = self.session_dir / "frames"
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.frames_dir.mkdir(parents=True, exist_ok=True)
+        self.manifest_path = self.session_dir / "manifest.json"
+        self.frame_count = 0
+        self.manifest = {
+            "run_id": run_id,
+            "started_at": datetime.now().isoformat(),
+            "capture_dir": str(self.session_dir),
+            "audio": "audio.wav",
+            "frames": [],
+        }
+        self._write_manifest()
+
+    def _append_manifest_frame(self, timestamp: float, path: Path, reason: str = "", delta: float = 0.0, occluded: bool = False) -> None:
+        if not self.manifest_path:
+            return
+        rel_path = path.relative_to(self.session_dir) if self.session_dir else path.name
+        self.manifest.setdefault("frames", []).append(
+            {"timestamp": timestamp, "path": str(rel_path), "reason": reason, "delta": delta, "occluded": occluded}
+        )
+        self.frame_count += 1
+        self._write_manifest()
+
+    def _finalize_manifest(self) -> None:
+        if not self.manifest_path:
+            return
+        self.manifest["ended_at"] = datetime.now().isoformat()
+        self.manifest["frame_count"] = self.frame_count
+        self._write_manifest()
+
+    def _write_manifest(self) -> None:
+        if not self.manifest_path:
+            return
+        try:
+            self.manifest_path.write_text(json.dumps(self.manifest, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _save_frame_event(self, event, frame) -> Optional[Path]:
+        if not self.frames_dir:
+            return None
+        # Build filename with timestamp to keep ordering.
+        filename = f"frame-{event.timestamp:.2f}.jpg"
+        filepath = self.frames_dir / filename
+        try:
+            cv2.imwrite(str(filepath), frame)
+            return filepath
+        except Exception:
+            return None
+
+    def _check_ffmpeg(self) -> bool:
+        return which("ffmpeg") is not None
+
+    def _show_ffmpeg_help(self) -> None:
+        msg = (
+            "ffmpeg krävs för transkription (Whisper).\n\n"
+            "macOS:\n"
+            "  1) Installera Homebrew (om saknas):\n"
+            "     /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"\n"
+            "  2) Lägg till brew i PATH:\n"
+            "     echo 'eval \"$(/opt/homebrew/bin/brew shellenv)\"' >> ~/.zprofile\n"
+            "     eval \"$(/opt/homebrew/bin/brew shellenv)\"\n"
+            "  3) Installera ffmpeg:\n"
+            "     brew install ffmpeg\n\n"
+            "Windows:\n"
+            "  1) Installera ffmpeg via officiell build (gyan.dev eller ffmpeg.org) eller via paketmanager (winget/choco).\n"
+            "  2) Lägg till ffmpeg/bin i PATH och starta om appen."
+        )
+        QMessageBox.information(self, "ffmpeg install", msg)
 
     def _switch_camera(self, new_index: int) -> None:
         try:
@@ -315,9 +819,17 @@ class WhiteboardWindow(QMainWindow):
         self._refresh_camera_list(populate_menu=False)
         self.statusBar().showMessage(f"Kamera {new_index} aktiv")
 
+    def eventFilter(self, obj, event):
+        if obj is self.video_label and event.type() == QEvent.Resize:
+            self._position_capture_button()
+            self._position_record_button()
+        return super().eventFilter(obj, event)
+
     def closeEvent(self, event) -> None:
         if self.cap:
             self.cap.release()
+        if self.ai_running:
+            self._stop_ai()
         super().closeEvent(event)
 
 

@@ -14,6 +14,15 @@ pip install -r Requirements.txt
 ```
 Kräver PySide6 och OpenCV med GUI-stöd (inte `opencv-python-headless`).
 
+Systemkrav:
+- `ffmpeg` behövs för Whisper-transkription (installera t.ex. `brew install ffmpeg` på macOS eller motsvarande på Windows/Linux).
+
+### Whisper utan nedladdning
+- Quick-läget använder Whisper `small` som standard.
+- Lägg din nedladdade modellfil (t.ex. `small.pt` eller `small.pt.bin`) i en mapp `whisper_models/` bredvid projektet, eller peka ut filen med `WHISPER_MODEL_PATH=/full/path/till/small.pt`.
+- Alternativt kan du sätta `WHISPER_MODEL_DIR` till en katalog som innehåller modellen.
+- Om ingen lokal fil hittas försöker Whisper annars ladda ner modellen, vilket kan misslyckas utan rätt certifikat/nät.
+
 ## Kör
 ```bash
 python src/main.py            # starta med default-kamera (index 0)
@@ -48,3 +57,6 @@ python src/main.py --list-cameras  # lista tillgängliga kameror och avsluta
 - Lägg till TTS/OCR (pytesseract/easyocr) i separata moduler.
 - Lägga till fler menyer/verktygsfält i Qt utan att röra bildpipeline.
 - Auto-följ text via rörelsedetektering eller OCR-bounding-boxar. 
+
+## Samlad dokumentation
+Se `docs/overview.md` för en sammanhängande beskrivning av app + AI-pipeline och UML-översikt.

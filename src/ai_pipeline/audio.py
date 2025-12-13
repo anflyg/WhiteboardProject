@@ -28,8 +28,9 @@ class Transcriber(Protocol):
 class DummyTranscriber:
     """Placeholder that returns an empty transcript."""
 
-    def __init__(self, model_name: str = "medium", error: Optional[str] = None) -> None:
+    def __init__(self, model_name: str = "medium", language: Optional[str] = None, error: Optional[str] = None) -> None:
         self.model_name = model_name
+        self.language = language
         self.error = error
 
     def transcribe(self, audio_path: Path) -> List[TranscriptSegment]:
@@ -39,13 +40,17 @@ class DummyTranscriber:
 class WhisperTranscriber:
     """Whisper-based transcriber if the whisper package is available."""
 
-    def __init__(self, model_name: str = "medium") -> None:
+    def __init__(self, model_name: str = "medium", language: Optional[str] = None) -> None:
         import whisper  # type: ignore
 
         self.model = whisper.load_model(model_name)
+        self.language = language
 
     def transcribe(self, audio_path: Path) -> List[TranscriptSegment]:
-        result = self.model.transcribe(str(audio_path), task="transcribe")
+        kwargs = {"task": "transcribe"}
+        if self.language:
+            kwargs["language"] = self.language
+        result = self.model.transcribe(str(audio_path), **kwargs)
         segments: List[TranscriptSegment] = []
         for seg in result.get("segments", []):
             segments.append(
@@ -100,19 +105,19 @@ def _resolve_model_target(model_name: str) -> tuple[str, List[Path]]:
     return model_name, candidates
 
 
-def make_transcriber(model_name: str = "medium") -> Transcriber:
+def make_transcriber(model_name: str = "medium", language: Optional[str] = None) -> Transcriber:
     model_target, candidates = _resolve_model_target(model_name)
     try:
         import whisper  # noqa: F401
 
-        return WhisperTranscriber(model_name=model_target)
+        return WhisperTranscriber(model_name=model_target, language=language)
     except Exception as exc:
         tried = [str(p) for p in candidates]
         hint = ""
         if tried:
             hint = "; searched for local model at: " + ", ".join(tried)
         advice = "Set WHISPER_MODEL_PATH to your downloaded .pt file or place it under whisper_models/."
-        return DummyTranscriber(model_name=model_name, error=f"{exc}{hint} {advice}")
+        return DummyTranscriber(model_name=model_name, language=language, error=f"{exc}{hint} {advice}")
 
 
 class AudioRecorder:

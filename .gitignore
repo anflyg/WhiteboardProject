@@ -7,3 +7,9 @@ __pycache__/
 
 # IDE/workspace files
 Python.code-workspace
+
+# Local data / outputs
+captures/
+exports/
+whisper_models/
+.DS_Store

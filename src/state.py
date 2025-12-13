@@ -1,9 +1,12 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 import numpy as np
 
 
 PAN_STEP = 20
 KEYSTONE_STEP = 10
+
+DEFAULT_CAPTURE_DIR = Path.home() / "Documents" / "WhiteboardShots"
 
 LEFT_KEYS = (81, 2424832, 65361, 63234, ord("a"))
 RIGHT_KEYS = (83, 2555904, 65363, 63235, ord("d"))
@@ -31,6 +34,9 @@ class AppState:
     keystone_step: int = KEYSTONE_STEP
     available_cameras: list[int] = field(default_factory=list)
     current_camera_index: int = 0
+    capture_dir: Path = DEFAULT_CAPTURE_DIR
+    capture_format: str = "jpg"
+    capture_prefix: str = ""
 
     def reset_keystone(self) -> None:
         self.keystone_src = default_keystone(self.width, self.height)

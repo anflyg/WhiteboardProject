@@ -15,10 +15,14 @@ from typing import Optional
 class PipelineConfig:
     name: str = "quick"
     whisper_model: str = "small"
+    whisper_language: Optional[str] = "sv"
     vision_backend: str = "local_basic"
     use_cloud_fallback: bool = False
     ssim_threshold: float = 0.97
-    fallback_interval_seconds: int = 10
+    fallback_interval_seconds: int = 20
+    frame_delta_threshold: float = 8.0
+    align_image_window_seconds: float = 5.0
+    min_frame_interval_seconds: float = 3.0
     stabilization_seconds: float = 0.8
     tile_rows: int = 3
     tile_cols: int = 4

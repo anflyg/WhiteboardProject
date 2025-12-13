@@ -2,6 +2,7 @@
 Entry point for whiteboard assist prototype.
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -9,6 +10,40 @@ from pathlib import Path
 if __package__ is None:
     project_root = Path(__file__).resolve().parent.parent
     sys.path.append(str(project_root))
+
+
+def _ensure_qt_plugin_paths() -> None:
+    """
+    Ensure Qt finds the cocoa platform plugin by setting plugin/library paths
+    from the current PySide6 install. Restart once so dyld sees the paths.
+    """
+    if os.environ.get("QT_ENV_FIXED") == "1":
+        return
+    try:
+        import PySide6  # Import just to locate the installed package
+
+        base = Path(PySide6.__file__).resolve().parent
+        qt_dir = base / "Qt"
+        plugins_path = qt_dir / "plugins"
+        platforms_path = plugins_path / "platforms"
+        libs_path = qt_dir / "lib"
+
+        env = os.environ.copy()
+        env.setdefault("QT_PLUGIN_PATH", str(plugins_path))
+        env.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(platforms_path))
+        env.setdefault("QT_QPA_PLATFORM", "cocoa")
+        env.setdefault("QT_MAC_DISABLE_LIBRARY_VALIDATION", "1")
+        env["DYLD_FRAMEWORK_PATH"] = str(libs_path) + (":" + env["DYLD_FRAMEWORK_PATH"] if "DYLD_FRAMEWORK_PATH" in env else "")
+        env["DYLD_LIBRARY_PATH"] = str(libs_path) + (":" + env["DYLD_LIBRARY_PATH"] if "DYLD_LIBRARY_PATH" in env else "")
+        env["QT_ENV_FIXED"] = "1"
+
+        # Restart once so dyld picks up paths; guard with QT_ENV_FIXED to avoid loops.
+        os.execve(sys.executable, [sys.executable, str(Path(__file__).resolve())] + sys.argv[1:], env)
+    except Exception:
+        return
+
+
+_ensure_qt_plugin_paths()
 
 from src.app import main
 from src.capture import list_available_cameras

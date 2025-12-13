@@ -7,6 +7,7 @@ HELP_LINES = [
     "0: reset view (zoom/center/keystone)",
     "+/- or =/_: zoom in/out",
     "arrows or WASD: pan",
+    "space or Ctrl+P: capture corrected photo",
     "t: toggle keystone on/off",
     "r: reset keystone to full frame",
     "1-4: select keystone corner (1=top-left, clockwise)",
