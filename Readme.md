@@ -60,3 +60,4 @@ python src/main.py --list-cameras  # lista tillgängliga kameror och avsluta
 
 ## Samlad dokumentation
 Se `docs/overview.md` för en sammanhängande beskrivning av app + AI-pipeline och UML-översikt.
+För macOS/Qt-startproblem (cocoa-plugin) se `docs/qt_troubleshooting.md`.
