@@ -168,7 +168,7 @@ class WhiteboardWindow(QMainWindow):
         self.capture_button.setCursor(Qt.PointingHandCursor)
         self.capture_button.setToolTip("Ta foto (mellanslag eller Ctrl+P)")
         self.capture_button.setAccessibleName("Ta foto (stillbild)")
-        self.capture_button.setText("CAM")
+        self.capture_button.setText("PHOTO")
         self._style_capture_button()
         self.capture_button.clicked.connect(self._capture_frame)
         self._position_capture_button()
