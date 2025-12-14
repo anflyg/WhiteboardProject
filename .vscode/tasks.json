@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "prepare-qt-plugins",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-c",
+        "ROOT=\"${workspaceFolder}\"; VENV=\"$ROOT/.venv\"; QTBASE=\"$VENV/lib/python3.12/site-packages/PySide6/Qt\"; TMP=\"$ROOT/tmp_qt_plugins/platforms\"; mkdir -p \"$TMP\"; cp \"$QTBASE\"/plugins/platforms/libq*.dylib \"$TMP\"/ 2>/dev/null || true"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

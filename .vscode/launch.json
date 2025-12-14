@@ -8,11 +8,12 @@
       "program": "${workspaceFolder}/src/main.py",
       "console": "integratedTerminal",
       "python": "${workspaceFolder}/.venv/bin/python",
+      "preLaunchTask": "prepare-qt-plugins",
       "env": {
         "QT_MAC_DISABLE_LIBRARY_VALIDATION": "1",
         "QT_QPA_PLATFORM": "cocoa",
-        "QT_PLUGIN_PATH": "${workspaceFolder}/.venv/lib/python3.12/site-packages/PySide6/Qt/plugins",
-        "QT_QPA_PLATFORM_PLUGIN_PATH": "${workspaceFolder}/.venv/lib/python3.12/site-packages/PySide6/Qt/plugins/platforms",
+        "QT_PLUGIN_PATH": "${workspaceFolder}/tmp_qt_plugins",
+        "QT_QPA_PLATFORM_PLUGIN_PATH": "${workspaceFolder}/tmp_qt_plugins/platforms",
         "DYLD_FRAMEWORK_PATH": "${workspaceFolder}/.venv/lib/python3.12/site-packages/PySide6/Qt/lib",
         "DYLD_LIBRARY_PATH": "${workspaceFolder}/.venv/lib/python3.12/site-packages/PySide6/Qt/lib"
       }
