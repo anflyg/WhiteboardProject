@@ -3,6 +3,7 @@ Entry point for whiteboard assist prototype.
 """
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -22,7 +23,8 @@ _ensure_project_root_on_path()
 def _ensure_qt_plugin_paths() -> None:
     """
     Ensure Qt finds the cocoa platform plugin by setting plugin/library paths
-    from the current PySide6 install. Restart once so dyld sees the paths.
+    from the current PySide6 install (copied to tmp_qt_plugins/) and restart once
+    so dyld sees the paths.
     """
     if os.environ.get("QT_ENV_FIXED") == "1":
         return
@@ -34,6 +36,20 @@ def _ensure_qt_plugin_paths() -> None:
         plugins_path = qt_dir / "plugins"
         platforms_path = plugins_path / "platforms"
         libs_path = qt_dir / "lib"
+
+        # Copy platform plugins to tmp_qt_plugins to avoid macOS hidden flag issues.
+        tmp_plugins_root = Path(__file__).resolve().parent.parent / "tmp_qt_plugins"
+        tmp_platforms_path = tmp_plugins_root / "platforms"
+        if not tmp_platforms_path.exists() or not any(tmp_platforms_path.glob("libq*.dylib")):
+            tmp_platforms_path.mkdir(parents=True, exist_ok=True)
+            for dylib in platforms_path.glob("libq*.dylib"):
+                try:
+                    shutil.copy2(dylib, tmp_platforms_path / dylib.name)
+                except OSError:
+                    pass
+        # Prefer copied plugins if present.
+        plugins_path = tmp_plugins_root if tmp_plugins_root.exists() else plugins_path
+        platforms_path = tmp_platforms_path if tmp_platforms_path.exists() else platforms_path
 
         env = os.environ.copy()
         env.setdefault("QT_PLUGIN_PATH", str(plugins_path))
