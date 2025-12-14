@@ -15,6 +15,7 @@ from typing import Optional
 class PipelineConfig:
     name: str = "quick"
     whisper_model: str = "small"
+    ocr_lang: str = "eng+sv"
     whisper_language: Optional[str] = "sv"
     vision_backend: str = "local_basic"
     use_cloud_fallback: bool = False

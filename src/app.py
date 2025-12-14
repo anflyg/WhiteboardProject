@@ -37,10 +37,13 @@ from src.ai_pipeline import (
     FrameExtractor,
     load_config,
     make_transcriber,
+    make_recognizer,
     AudioRecorder,
     render_markdown_document,
     render_frames_listing,
     AlignBlock,
+    align_transcript_with_board,
+    TileVersion,
 )
 
 
@@ -111,6 +114,7 @@ class WhiteboardWindow(QMainWindow):
             cols=self.ai_config.tile_cols,
             stabilization_seconds=self.ai_config.stabilization_seconds,
         )
+        self.board_recognizer = make_recognizer(self.ai_config.vision_backend, lang=getattr(self.ai_config, "ocr_lang", None))
         self.transcriber = make_transcriber(self.ai_config.whisper_model, language=getattr(self.ai_config, "whisper_language", None))
         self.transcriber_is_dummy = self.transcriber.__class__.__name__ == "DummyTranscriber"
         self.transcriber_error = getattr(self.transcriber, "error", None)
@@ -686,21 +690,36 @@ class WhiteboardWindow(QMainWindow):
             except Exception:
                 exported_audio = None
 
+        # Kör enkel board-recognition på kopierade frames (text vs ritningar)
+        board_tiles: list[TileVersion] = []
+        for f in copied_frames:
+            try:
+                frame_path = run_export_dir / f["path"]
+                rec = self.board_recognizer.recognize(frame_path)
+                ts = f.get("timestamp", 0)
+                if rec.text:
+                    board_tiles.append(TileVersion(tile_id=(0, len(board_tiles)), start=ts, end=ts, text=rec.text, image_path=None))
+                for img_path in rec.images:
+                    img_rel = Path(img_path)
+                    if img_rel.is_absolute():
+                        try:
+                            img_rel = img_rel.relative_to(run_export_dir)
+                        except Exception:
+                            pass
+                    board_tiles.append(
+                        TileVersion(tile_id=(0, len(board_tiles)), start=ts, end=ts, text=None, image_path=str(img_rel))
+                    )
+            except Exception:
+                continue
+
         if transcript:
-            blocks = []
-            for seg in transcript:
-                nearest_img = None
-                if copied_frames:
-                    nearest_img = min(copied_frames, key=lambda f: abs(f.get("timestamp", 0) - seg.start))
-                imgs = []
-                if nearest_img:
-                    img_ts = nearest_img.get("timestamp", 0)
-                    if abs(img_ts - seg.start) <= getattr(self.ai_config, "align_image_window_seconds", 5.0):
-                        imgs = [nearest_img["path"]]
-                blocks.append(AlignBlock(start=seg.start, end=seg.end, speech_text=seg.text, board_text=[], board_images=imgs))
+            if board_tiles:
+                blocks = align_transcript_with_board(transcript, board_tiles)
+            else:
+                blocks = [AlignBlock(start=seg.start, end=seg.end, speech_text=seg.text, board_text=[], board_images=[]) for seg in transcript]
             render_markdown_document(blocks, md_path)
         else:
-            # Fallback: just list frames.
+            # Fallback: bara lista frames.
             render_frames_listing(copied_frames, md_path)
             if transcript_error:
                 try:
