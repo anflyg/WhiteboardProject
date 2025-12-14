@@ -6,10 +6,17 @@ import os
 import sys
 from pathlib import Path
 
-# Make src imports work when running as a script (python src/main.py) or as module.
-if __package__ is None:
+def _ensure_project_root_on_path() -> None:
+    """
+    Make src imports work regardless of how main.py is launched (Run Python File, debug, run.sh).
+    """
     project_root = Path(__file__).resolve().parent.parent
-    sys.path.append(str(project_root))
+    root_str = str(project_root)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+
+
+_ensure_project_root_on_path()
 
 
 def _ensure_qt_plugin_paths() -> None:
