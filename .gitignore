@@ -13,3 +13,4 @@ captures/
 exports/
 whisper_models/
 .DS_Store
+tmp_qt_plugins/
