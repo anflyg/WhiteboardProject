@@ -93,6 +93,8 @@ class WhiteboardWindow(QMainWindow):
 
         self.cap = None
         self.state: Optional[AppState] = None
+        self.camera_action_group = QActionGroup(self)
+        self.camera_action_group.setExclusive(True)
 
         # AI pipeline stubs (no heavy processing yet)
         self.ai_config = load_config("quick")
@@ -341,6 +343,8 @@ class WhiteboardWindow(QMainWindow):
 
     def _refresh_camera_menu(self) -> None:
         self.camera_menu.clear()
+        self.camera_action_group = QActionGroup(self)
+        self.camera_action_group.setExclusive(True)
         refresh_action = QAction("Refresh camera list", self)
         refresh_action.triggered.connect(self._refresh_camera_list)
         self.camera_menu.addAction(refresh_action)
@@ -358,6 +362,7 @@ class WhiteboardWindow(QMainWindow):
             action.setCheckable(True)
             action.setChecked(cam_idx == self.state.current_camera_index)
             action.triggered.connect(lambda checked, idx=cam_idx: self._switch_camera(idx))
+            self.camera_action_group.addAction(action)
             self.camera_menu.addAction(action)
 
     def _refresh_camera_list(self, populate_menu: bool = True) -> None:
@@ -507,16 +512,27 @@ class WhiteboardWindow(QMainWindow):
             return
 
         save_dir = self._ensure_capture_dir()
+        save_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         prefix = self._safe_prefix(self.state.capture_prefix)
         name_parts = [part for part in (prefix, f"whiteboard-{timestamp}") if part]
         filename = "_".join(name_parts) + f".{self.state.capture_format}"
         filepath = save_dir / filename
 
-        if cv2.imwrite(str(filepath), self._last_processed_frame):
+        try:
+            ok = cv2.imwrite(str(filepath), self._last_processed_frame)
+        except Exception as exc:
+            QMessageBox.warning(self, "Foto", f"Kunde inte spara bilden:\n{exc}")
+            return
+
+        if ok:
             self.statusBar().showMessage(f"Sparade foto: {filepath}")
         else:
-            QMessageBox.warning(self, "Foto", "Kunde inte spara bilden.")
+            QMessageBox.warning(
+                self,
+                "Foto",
+                f"Kunde inte spara bilden till {filepath}.\nKontrollera skrivbehörighet eller välj annan mapp via Capture → Choose Save Folder.",
+            )
 
     def _ensure_capture_dir(self) -> Path:
         directory = self.state.capture_dir or Path.home() / "Documents" / "WhiteboardShots"
@@ -817,6 +833,7 @@ class WhiteboardWindow(QMainWindow):
         self.state.reset_view()
         self.state.keystone_src = default_keystone(w, h)
         self._refresh_camera_list(populate_menu=False)
+        self._refresh_camera_menu()
         self.statusBar().showMessage(f"Kamera {new_index} aktiv")
 
     def eventFilter(self, obj, event):
