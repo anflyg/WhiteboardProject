@@ -125,6 +125,8 @@ class WhiteboardWindow(QMainWindow):
         self.manifest: dict = {}
         self.frame_count: int = 0
         self.audio_path: Optional[Path] = None
+        self.last_export_dir: Optional[Path] = None
+        self.last_export_error: Optional[str] = None
         self.ffmpeg_available: bool = self._check_ffmpeg()
 
         self._last_processed_frame = None
@@ -244,6 +246,7 @@ class WhiteboardWindow(QMainWindow):
         ai_menu = menubar.addMenu("AI")
         self._add_action(ai_menu, "Start AI (recommended mode)", "Ctrl+Shift+S", self._start_ai)
         self._add_action(ai_menu, "Stop AI", "Ctrl+Shift+E", self._stop_ai)
+        self._add_action(ai_menu, "Exportera för ChatGPT", "Ctrl+Shift+X", self._export_for_chatgpt)
 
         # Help menu
         help_menu = menubar.addMenu("Help")
@@ -606,23 +609,70 @@ class WhiteboardWindow(QMainWindow):
         self.statusBar().showMessage(profile_msg)
         self._style_record_button(active=True)
 
-    def _stop_ai(self) -> None:
+    def _stop_ai(self) -> Optional[Path]:
         if not self.ai_running:
             self.statusBar().showMessage("AI är redan stoppad")
-            return
+            return None
         self.ai_running = False
         self.board_state.close_versions(time.monotonic() - (self.ai_started_at or 0))
         self._stop_audio()
-        self._postprocess_session()
+        export_dir = self._postprocess_session()
         self._finalize_manifest()
         self.statusBar().showMessage("AI stoppad (export klar)")
         self._style_record_button(active=False)
+        return export_dir
 
     def _toggle_ai_recording(self) -> None:
         if self.ai_running:
             self._stop_ai()
         else:
             self._start_ai()
+
+    def _export_for_chatgpt(self) -> None:
+        """
+        User-triggered GUI flow for ChatGPT export.
+        """
+        try:
+            if self.ai_running:
+                export_dir = self._stop_ai()
+                if export_dir:
+                    QMessageBox.information(
+                        self,
+                        "Export klar",
+                        f"Underlaget för ChatGPT är exporterat.\n\nSparad plats:\n{export_dir}",
+                    )
+                    return
+                raise RuntimeError(self.last_export_error or "Exporten kunde inte skapas.")
+
+            if self.session_dir and self.session_dir.exists() and self.manifest:
+                export_dir = self._postprocess_session(raise_on_error=True)
+                QMessageBox.information(
+                    self,
+                    "Export klar",
+                    f"Underlaget för ChatGPT är exporterat.\n\nSparad plats:\n{export_dir}",
+                )
+                return
+
+            if self.last_export_dir and self.last_export_dir.exists():
+                QMessageBox.information(
+                    self,
+                    "Exportera för ChatGPT",
+                    f"Senaste export finns här:\n{self.last_export_dir}",
+                )
+                return
+
+            QMessageBox.information(
+                self,
+                "Exportera för ChatGPT",
+                "Ingen inspelad session att exportera ännu.\nStarta AI-inspelning och stoppa den först.",
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Export misslyckades",
+                "Kunde inte exportera underlag för ChatGPT.\n\n"
+                f"Fel: {exc}",
+            )
 
     def _start_audio(self) -> None:
         if not self.session_dir:
@@ -648,11 +698,13 @@ class WhiteboardWindow(QMainWindow):
         except Exception:
             pass
 
-    def _postprocess_session(self) -> None:
+    def _postprocess_session(self, raise_on_error: bool = False) -> Optional[Path]:
         """
         Minimal postprocess: transcribe audio, align frames, export stable session package.
         """
         export_root = (Path.cwd() / self.ai_config.export_dir).resolve()
+        self.last_export_error = None
+        export_dir: Optional[Path] = None
 
         transcript = []
         transcript_error = None
@@ -706,16 +758,21 @@ class WhiteboardWindow(QMainWindow):
                 align_blocks=blocks,
                 transcript_error=effective_transcript_error,
             )
+            self.last_export_dir = export_dir
             self.statusBar().showMessage(f"Export skapad: {export_dir.name}")
         except Exception as exc:
+            self.last_export_error = str(exc)
             self.statusBar().showMessage(f"Export misslyckades: {exc}")
-
-        # Cleanup intermediates if configured
-        if not self.ai_config.keep_intermediates and self.session_dir:
-            try:
-                rmtree(self.session_dir)
-            except Exception:
-                pass
+            if raise_on_error:
+                raise
+        finally:
+            # Cleanup intermediates if configured
+            if not self.ai_config.keep_intermediates and self.session_dir:
+                try:
+                    rmtree(self.session_dir)
+                except Exception:
+                    pass
+        return export_dir
 
     # --- Session / manifest helpers ---
     def _start_new_session(self) -> None:

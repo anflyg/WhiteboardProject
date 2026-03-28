@@ -39,6 +39,7 @@ Vid stop av AI-inspelning skapas ett exportpaket i `exports/session_YYYY-MM-DD_H
 - `keyframes/`
 
 Om underlag saknas skrivs tydlig placeholder i respektive fil i stället för att filen uteblir.
+I GUI kan du exportera via **AI → Exportera för ChatGPT** (`Ctrl+Shift+X`).
 
 ## Kör
 ```bash
