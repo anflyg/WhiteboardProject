@@ -1,8 +1,10 @@
 """
 Configuration profiles for AI pipeline.
 
-Quick mode targets laptops without strong GPU.
-Full mode is for offline, higher-quality processing.
+Profiles:
+- quick: light and fast
+- recommended: default balanced profile
+- full_local: heavier local/offline quality profile
 """
 from __future__ import annotations
 
@@ -13,8 +15,8 @@ from typing import Optional
 
 @dataclass
 class PipelineConfig:
-    name: str = "quick"
-    whisper_model: str = "small"
+    name: str = "recommended"
+    whisper_model: str = "turbo"
     ocr_lang: str = "eng+sv"
     whisper_language: Optional[str] = "sv"
     vision_backend: str = "local_basic"
@@ -34,27 +36,59 @@ class PipelineConfig:
     keep_intermediates: bool = False
 
 
-def default_config(mode: str = "quick") -> PipelineConfig:
+def default_config(mode: str = "recommended") -> PipelineConfig:
     mode = mode.lower()
-    if mode == "full":
+    if mode == "quick":
         return PipelineConfig(
-            name="full",
+            name="quick",
+            whisper_model="tiny",
+            vision_backend="local_basic",
+            use_cloud_fallback=False,
+            ssim_threshold=0.96,
+            fallback_interval_seconds=30,
+            frame_delta_threshold=9.0,
+            min_frame_interval_seconds=4.0,
+            stabilization_seconds=0.6,
+            tile_rows=2,
+            tile_cols=3,
+            max_parallel_ocr=1,
+            downscale_width=960,
+        )
+    if mode == "full_local" or mode == "full":
+        return PipelineConfig(
+            name="full_local",
             whisper_model="large",
             vision_backend="local_strong",
             use_cloud_fallback=False,
-            ssim_threshold=0.98,
-            fallback_interval_seconds=20,
+            ssim_threshold=0.985,
+            fallback_interval_seconds=10,
+            frame_delta_threshold=6.0,
+            min_frame_interval_seconds=1.5,
             stabilization_seconds=1.0,
             tile_rows=4,
             tile_cols=5,
             max_parallel_ocr=2,
             downscale_width=None,
         )
-    return PipelineConfig()
+    return PipelineConfig(
+        name="recommended",
+        whisper_model="turbo",
+        vision_backend="local_basic",
+        use_cloud_fallback=False,
+        ssim_threshold=0.97,
+        fallback_interval_seconds=20,
+        frame_delta_threshold=8.0,
+        min_frame_interval_seconds=3.0,
+        stabilization_seconds=0.8,
+        tile_rows=3,
+        tile_cols=4,
+        max_parallel_ocr=1,
+        downscale_width=1280,
+    )
 
 
 def load_config(mode: Optional[str] = None) -> PipelineConfig:
     """
-    Later this can read from a file/env; for now pick quick/full.
+    Later this can read from a file/env; for now pick quick/recommended/full_local.
     """
-    return default_config(mode or "quick")
+    return default_config(mode or "recommended")

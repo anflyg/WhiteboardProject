@@ -18,10 +18,15 @@ Systemkrav:
 - `ffmpeg` behövs för Whisper-transkription (installera t.ex. `brew install ffmpeg` på macOS eller motsvarande på Windows/Linux).
 
 ### Whisper utan nedladdning
-- Quick-läget använder Whisper `small` som standard.
-- Lägg din nedladdade modellfil (t.ex. `small.pt` eller `small.pt.bin`) i en mapp `whisper_models/` bredvid projektet, eller peka ut filen med `WHISPER_MODEL_PATH=/full/path/till/small.pt`.
+- Standardprofilen är `recommended` och använder Whisper `turbo`.
+- Lägg din nedladdade modellfil (t.ex. `turbo.pt` eller `turbo.pt.bin`) i en mapp `whisper_models/` bredvid projektet, eller peka ut filen med `WHISPER_MODEL_PATH=/full/path/till/turbo.pt`.
 - Alternativt kan du sätta `WHISPER_MODEL_DIR` till en katalog som innehåller modellen.
 - Om ingen lokal fil hittas försöker Whisper annars ladda ner modellen, vilket kan misslyckas utan rätt certifikat/nät.
+
+### Körprofiler (AI-pipeline)
+- `quick`: lätt/snabbläge (Whisper `tiny`).
+- `recommended` (default): balanserat standardläge (Whisper `turbo`).
+- `full_local`: tyngre lokal kvalitet (Whisper `large`).
 
 ## Kör
 ```bash

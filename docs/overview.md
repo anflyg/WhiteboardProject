@@ -24,7 +24,7 @@ python src/main.py --list-cameras        # lista kameror och avsluta
 ```
 
 ### Whisper offline (ingen nedladdning)
-- Standardmodell är Whisper `small`. Lägg `small.pt` i `whisper_models/` bredvid projektet eller sätt `WHISPER_MODEL_PATH=/full/path/till/small.pt`.
+- Standardprofilen är `recommended` med Whisper `turbo`. Lägg `turbo.pt` i `whisper_models/` bredvid projektet eller sätt `WHISPER_MODEL_PATH=/full/path/till/turbo.pt`.
 - Alternativt `WHISPER_MODEL_DIR=/path/till/katalog/med/modellen`.
 - `ffmpeg` krävs för transkription (installera via t.ex. `brew install ffmpeg`).
 
@@ -43,16 +43,16 @@ python src/main.py --list-cameras        # lista kameror och avsluta
 
 ## AI-pipelinen (designsammanfattning)
 - **Audio:** `AudioRecorder` spelar in WAV; `Transcriber`/`WhisperTranscriber` transkriberar med tidsstämplar.
-- **Frames:** `FrameExtractor` tar keyframes via förändringsdetektion (SSIM/delta) + fallback-intervall (quick-läge default 10 s).
+- **Frames:** `FrameExtractor` tar keyframes via förändringsdetektion (SSIM/delta) + fallback-intervall (quick-läge 30 s).
 - **Board state:** `BoardState` delar tavlan i tiles, versionerar ändringar, hanterar wipe/occlusion (framtida arbete).
 - **Vision:** `BoardRecognizer`-interface i `vision.py` för text/handstil/matte; pluggbar backend (lokal/remote).
 - **Align:** `align.py` kopplar transkriptsegment till tavlans innehåll och bilder (närmast i tid).
 - **Export:** `export.py` renderar Markdown/HTML med tal + tavlans text/bilder.
-- **Config:** `config.py` styr modellval, trösklar (SSIM), fallback-intervall, tile-grid, paths (quick/full-profiler).
+- **Config:** `config.py` styr modellval, trösklar (SSIM), fallback-intervall, tile-grid, paths (quick/recommended/full_local-profiler).
 
 ## Tidsstämpling och sampling
 - Förändringsdetektion via SSIM/delta på nedskalad tavla; nyckelbild när tröskel underskrids.
-- Fallback-frame var N sekunder (quick: 10 s) om inget ändrats, så långsamma ändringar inte missas.
+- Fallback-frame var N sekunder (quick: 30 s) om inget ändrats, så långsamma ändringar inte missas.
 - Tvingad keyframe efter occlusion (när mask försvinner) och efter wipe.
 
 ## Occlusion, wipe och stabilisering
@@ -74,11 +74,12 @@ python src/main.py --list-cameras        # lista kameror och avsluta
 ## Prestanda och resurser
 - Snabb sampling/SSIM på CPU med nedskalade frames; tiles minskar OCR-belastning.
 - Använd fp16/int8 där möjligt (Metal/CoreML på Apple Silicon; CUDA på Nvidia).
-- På svag hårdvara: håll små modeller (Whisper small), färre tiles, längre fallback-intervall.
+- På svag hårdvara: håll små modeller (Whisper tiny), färre tiles, längre fallback-intervall.
 
 ## Körprofiler
-- **Quick (default):** Whisper small, nedskalad bild, adaptiv sampling + fallback var 10 s, 3x4 tiles, CPU/Apple Silicon-optim.
-- **Full (planerad):** Whisper large, tätare sampling, fler tiles, starkare vision-backend.
+- **Quick:** Whisper tiny, nedskalad bild, adaptiv sampling + fallback var 30 s, 2x3 tiles.
+- **Recommended (default):** Whisper turbo, balanserade trösklar, fallback var 20 s, 3x4 tiles.
+- **Full local:** Whisper large, tätare sampling, fler tiles (4x5), högre lokal kvalitet.
 
 ## Körflöde (inspelning → export)
 1) Starta AI-inspelning i appen (REC). Skapar `captures/run-<ts>/` med audio + frames.

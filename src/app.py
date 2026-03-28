@@ -100,7 +100,7 @@ class WhiteboardWindow(QMainWindow):
         self.camera_action_group.setExclusive(True)
 
         # AI pipeline stubs (no heavy processing yet)
-        self.ai_config = load_config("quick")
+        self.ai_config = load_config()
         self.ai_running = False
         self.ai_started_at: Optional[float] = None
         self.frame_extractor = FrameExtractor(
@@ -242,7 +242,7 @@ class WhiteboardWindow(QMainWindow):
 
         # AI menu (start/stop stub)
         ai_menu = menubar.addMenu("AI")
-        self._add_action(ai_menu, "Start AI (quick mode)", "Ctrl+Shift+S", self._start_ai)
+        self._add_action(ai_menu, "Start AI (recommended mode)", "Ctrl+Shift+S", self._start_ai)
         self._add_action(ai_menu, "Stop AI", "Ctrl+Shift+E", self._stop_ai)
 
         # Help menu
@@ -598,7 +598,9 @@ class WhiteboardWindow(QMainWindow):
         if self.transcriber_is_dummy:
             extra = f" (fel: {self.transcriber_error})" if self.transcriber_error else ""
             self.statusBar().showMessage(f"Whisper saknas/laddas ej{extra}; ingen transkription.")
-        self.statusBar().showMessage(f"AI startad i läge: {self.ai_config.name}")
+        profile_msg = f"AI-profil: {self.ai_config.name} | Whisper-modell: {self.ai_config.whisper_model}"
+        print(f"[AI CONFIG] {profile_msg}", flush=True)
+        self.statusBar().showMessage(profile_msg)
         self._style_record_button(active=True)
 
     def _stop_ai(self) -> None:
@@ -767,6 +769,8 @@ class WhiteboardWindow(QMainWindow):
         self.manifest = {
             "run_id": run_id,
             "started_at": datetime.now().isoformat(),
+            "profile": self.ai_config.name,
+            "whisper_model": self.ai_config.whisper_model,
             "capture_dir": str(self.session_dir),
             "audio": "audio.wav",
             "frames": [],
