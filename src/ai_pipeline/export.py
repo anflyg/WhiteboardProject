@@ -344,6 +344,7 @@ def export_session_package(
         "keyframe_count": len(timeline_keyframes),
         "transcript_segment_count": len(timeline.get("transcript_segments", [])),
         "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+        "board_state": session_manifest.get("board_state", {}),
         "files": {
             "transcript_sv.txt": "transcript_sv.txt",
             "transcript_sv.srt": "transcript_sv.srt",

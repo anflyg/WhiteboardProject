@@ -420,7 +420,19 @@ class WhiteboardWindow(QMainWindow):
                         delta=event.delta,
                         occluded=event.occluded,
                     )
-                self.board_state.update_frame(rel_ts)
+                board_frame = self.board_state.update_frame(
+                    rel_ts,
+                    frame_path=str(saved_path) if saved_path else None,
+                    reason=event.reason,
+                    delta=event.delta,
+                    occluded=event.occluded,
+                )
+                print(
+                    "[BOARD STATE] "
+                    f"frame={board_frame.frame_id} rev={board_frame.revision_id} "
+                    f"reason={board_frame.reason or 'unknown'} ts={board_frame.timestamp:.2f}",
+                    flush=True,
+                )
                 self.statusBar().showMessage(
                     f"Inspelning pågår: {self.frame_count} bild(er) sparade"
                     + ("" if self.audio_recorder.backend_available else " (ingen ljud-backend)")
@@ -748,6 +760,7 @@ class WhiteboardWindow(QMainWindow):
         effective_transcript_error = transcript_error
         if not effective_transcript_error and self.transcriber_is_dummy:
             effective_transcript_error = f"faster-whisper saknas eller kunde inte laddas{detail}."
+        self.manifest["board_state"] = self.board_state.export_metadata()
 
         try:
             export_dir = export_session_package(

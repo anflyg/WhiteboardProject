@@ -1,106 +1,415 @@
-# Whiteboard AI-pipeline – design och krav
+# WhiteboardProject – designdokument
 
-## Målbild
-- Kombinera transkription av föreläsningen med innehållet på whiteboarden i ett leverabelt dokument (Markdown → PDF/HTML).
-- Hantera 30–60 min video med robusthet mot brus, occlusioner (lärare som skymmer) och successiva ändringar på tavlan (små justeringar, sudda/skriva om).
-- Separera text/handstil/matte från ritade bilder och inkludera båda i resultatet.
+## 1. Syfte
 
-## Övergripande beslut
-- **Separat AI-paket:** Ett eget paket `src/ai_pipeline/` kapslar all hantering av ljud, tavelframes, OCR/vision, matte, segmentering och alignering. Övriga app-komponenter (UI, I/O) anropar paketet via tydliga gränssnitt.
-- **Hybrid bildanalys:** Adaptiv frame-extraktion (förändringsdetektion via SSIM/delta) + fallback på fast intervall för att inte missa långsamma ändringar.
-- **Regional state-tracking:** Tavlan delas i tiles; varje tile får versioner över tid så vi kan hantera små ändringar och omskrivningar utan att OCR:a hela tavlan varje gång.
-- **Occlusion-tålighet:** Person-/huvudmask på varje frame för att blockera OCR när tavlan är skymd; tvingad keyframe när masken försvinner.
-- **Matte/handstil:** Pluggbar modellstrategi: lokalt/offline där möjligt, men med möjlighet att skicka osäkra regioner till en kraftfull vision-/math-modell.
+WhiteboardProject ska vara en lokal-first applikation för att fånga, visa, bearbeta och strukturera whiteboardgenomgångar på ett sätt som ger användaren konkret nytta utan löpande tokenkostnader.
 
-## Funktionella krav
-- Transkribera tal med tidsstämplar.
-- Extrahera och OCR:a tavlans text/handstil och identifiera matematiska uttryck.
-- Segmentera ritblock (bilder/figurer) och spara dessa som bilder med tidsstämplar.
-- Hantera occlusioner: hoppa över skymda frames och uppdatera när tavlan syns igen.
-- Hantera små ändringar och omskrivningar per region; versionera per tile med tidsstämplar.
-- Hantera raderingar: upptäck wipe och behandla efterföljande innehåll som ny version.
-- Sammanfoga transkription + tavlainnehåll tidsmässigt och exportera dokument.
+Produkten har två sammanhängande kärnvärden:
 
-## Icke-funktionella krav
-- Skala till 30–60 min video utan orimlig OCR-kostnad (adaptiv sampling, tile-baserad OCR).
-- Robust mot brus (ljud- och bildförbättring).
-- Utbyggbart: nya modeller ska kunna bytas utan att påverka pipeline-orchestreringen.
+1. **Förbättrad live-visning av whiteboard**
+   - visa whiteboarden tydligare via kamera
+   - stöd för zoom
+   - stöd för pan
+   - stöd för keystone/perspektivkorrigering
+   - stöd för val av kamera och stabil visning
+   - stöd för att lättare kunna läsa och följa tavlans innehåll i stunden
 
-## Paketstruktur (ny)
+2. **Lokal bearbetning och valfri AI-efterbearbetning**
+   - inspelning eller fångst av underlag
+   - frame-urval
+   - transkribering
+   - OCR/whiteboardtolkning på grundnivå
+   - lokal export
+   - valfri export till ChatGPT med rätt underlag och prompt
+
+Produkten ska alltså inte bara ses som en AI-pipeline, utan som ett komplett whiteboardverktyg med både **live-användning** och **efterbearbetning**.
+
+Systemet ska alltid fungera lokalt, medan ChatGPT-export ska vara ett frivilligt kvalitetslyft.
+
+---
+
+## 2. Produktprinciper
+
+### 2.1 Lokal-first
+All kärnfunktion ska kunna köras lokalt på användarens dator utan krav på extern AI-tjänst.
+
+### 2.2 Cloud-optional
+Extern AI ska vara ett valbart steg för förbättrad efterbearbetning, inte ett krav för att produkten ska vara användbar.
+
+### 2.3 Praktisk kvalitet före teknisk perfektion
+Första målet är inte perfekt förståelse av all handskrift, matematik eller alla ritningar. Första målet är att få ut ett användbart underlag med hög träffsäkerhet i de vanligaste fallen.
+
+### 2.4 Tydligt arbetsflöde
+GUI och funktioner ska utformas utifrån användarens arbetsflöde, inte utifrån interna modellnamn eller tekniska implementationer.
+
+### 2.5 Whiteboard först
+Produktens grund är att ge användaren en bättre vy av whiteboarden i realtid. AI-bearbetning och export bygger vidare på detta, men ersätter inte live-användningen som kärnvärde.
+
+### 2.6 Synk är kärnproblemet
+Produktens viktigaste intelligens är inte bara att transkribera tal eller spara bilder, utan att förstå **kopplingen mellan vad läraren säger och vad som finns på tavlan vid just det tillfället**.
+
+### 2.7 Sektioner före rådata
+Målet är inte i första hand att samla rå frames och rå text, utan att skapa meningsfulla **sektioner** som motsvarar hur en elev faktiskt antecknar under en lektion.
+
+---
+
+## 3. Beslut som gäller nu
+
+### 3.1 Standardbackend för lokal transkribering
+Projektet ska använda **faster-whisper** som standardbackend för lokal transkribering.
+
+### 3.2 Standardmodell för lokal transkribering
+Projektets standardprofil ska använda modellen **small**.
+
+Detta innebär:
+- rimlig lokal prestanda på en MacBook Air
+- tillräckligt bra basnivå för standardflödet
+- möjlighet att senare lägga till tyngre kvalitetslägen utan att höja grundkravet för användaren
+
+### 3.3 Export till ChatGPT
+Systemet ska kunna exportera ett komplett AI-underlag för ChatGPT.
+
+Exporten ska innehålla:
+- transkription
+- utvalda keyframes
+- lokal sammanställning
+- tidslinje/metadata
+- färdig prompt för ChatGPT
+
+### 3.4 Ingen direkt koppling till användarens prenumeration
+Produkten ska inte bygga på att använda användarens ChatGPT-prenumeration som intern motor i appen.
+
+I stället ska appen:
+- förbereda materialet lokalt
+- exportera det i rätt format
+- ge användaren tydlig instruktion för uppladdning i ChatGPT
+
+### 3.5 Nästa kärnprioritet
+Nästa stora utvecklingssteg efter grundexporten är:
+- board state över tid
+- sektionering av lektionen
+- wipe-detektion
+- stabiliseringslogik
+- anteckningsenheter som kopplar tavla och tal
+
+---
+
+## 4. Målbild för användarflödet
+
+### 4.1 Flöde A – live-användning av whiteboard
+1. Användaren startar appen
+2. Användaren väljer kamera
+3. Appen visar whiteboarden i realtid
+4. Användaren kan justera perspektiv med keystone
+5. Användaren kan zooma in för att läsa detaljer
+6. Användaren kan panorera runt den inzoomade ytan
+7. Appen ska ge en stabil och lättolkad vy av tavlan
+
+### 4.2 Flöde B – helt lokalt efterarbete
+1. Användaren startar inspelning eller fångst
+2. Appen samlar ljud och visuellt material
+3. Appen väljer relevanta keyframes
+4. Ljud transkriberas lokalt med faster-whisper small
+5. Whiteboardmaterial tolkas lokalt i enkel form
+6. Appen genererar lokal sammanställning
+7. Användaren exporterar resultatet
+
+### 4.3 Flöde C – lokalt plus ChatGPT
+1. Användaren kör samma lokala flöde
+2. Användaren väljer **Exportera för ChatGPT**
+3. Appen skapar ett paket med filer och prompt
+4. Användaren laddar upp detta paket eller dess innehåll i ChatGPT
+5. ChatGPT används för förbättrad tolkning, sammanfattning och strukturering
+
+### 4.4 Flöde D – framtida anteckningsflöde
+1. Systemet spårar hur tavlan förändras över tid
+2. Systemet upptäcker när en tavelsektion börjar, stabiliseras och avslutas
+3. Systemet kopplar lärarens tal till rätt taveltillstånd
+4. Systemet identifierar när tavlan suddas eller när en ny uppgift börjar
+5. Systemet skapar anteckningsenheter som motsvarar hur en elev skulle ha antecknat materialet
+
+---
+
+## 5. Funktionell design
+
+## 5.1 Kärnfunktioner för whiteboardvisning
+
+### Kameravisning
+Systemet ska kunna visa livevideo från vald kamera.
+
+### Kameraval
+Användaren ska kunna välja mellan tillgängliga kameror.
+
+### Keystone/perspektivkorrigering
+Användaren ska kunna justera tavlans hörn så att whiteboarden visas som en rak och mer lättläst yta.
+
+### Zoom
+Användaren ska kunna zooma in tavlan för att läsa mindre detaljer.
+
+### Pan
+När användaren är inzoomad ska det gå att flytta vyn över tavlans yta.
+
+### Overlay och visuella hjälplager
+Systemet ska kunna visa hjälplager som underlättar justering, till exempel hörnmarkörer, aktivt läge eller enkel användarhjälp.
+
+### Stabil och tydlig användning
+Kärnupplevelsen ska vara att användaren snabbt kan få en bättre vy av tavlan än den råa kamerabilden ger.
+
+## 5.2 Lokala profiler
+
+Systemet ska ha tre profiler.
+
+### Quick
+För snabb återkoppling och enklare datorer.
+- lättare modell
+- snabbare körning
+- lägre kvalitet
+
+### Recommended
+Detta ska vara standardläget.
+- faster-whisper
+- modellen small
+- normal kvalitetsnivå
+- bästa balans mellan kvalitet och prestanda för MacBook Air
+
+### Full Local
+För högsta lokala kvalitet.
+- tyngre körning
+- fler eller bättre frames
+- mer noggrann bearbetning
+- långsammare flöde
+
+## 5.3 Exportformat för ChatGPT
+
+Vid export ska appen skapa en sessionsmapp med stabil struktur.
+
+Exempel:
+
+```text
+session_YYYY-MM-DD_HH-MM/
+  transcript_sv.txt
+  transcript_sv.srt
+  board_summary.md
+  prompt_chatgpt.txt
+  manifest.json
+  timeline.json
+  keyframes/
+    0001.jpg
+    0002.jpg
+    0003.jpg
 ```
-src/ai_pipeline/
-  __init__.py
-  audio.py          # Ljudextraktion, brusreducering, transkription (Whisper/annat).
-  frames.py         # Frame-extraktion, SSIM/delta, occlusionmask, keyframe-logik.
-  board_state.py    # Tile-state, versionering, wipe-detektion, stabiliseringsfönster.
-  vision.py         # Text/handstil/matte-OCR + ritblocksegmentering, pluggbar backend (lokal/remote).
-  align.py          # Synka transkriptsegment med tavlans state över tid.
-  export.py         # Bygg Markdown/HTML och bädda in bilder + text.
-  config.py         # Modellval, trösklar, intervall, paths.
-```
 
-## Designbeslut och motivering
-- **Adaptiv sampling + fallback**: SSIM/delta detekterar förändring; fallback var 20–30 s så långsamma eller ljusa ändringar inte missas. Reducerar OCR-kostnad jämfört med 2–3 s fast sampling.
-- **Tile-baserad state**: Vi uppdaterar bara regioner som faktiskt ändras, vilket minskar OCR-belastning och hanterar små justeringar under skrivande.
-- **Stabiliseringsfönster (t.ex. 0.5–1 s utan förändring)**: Förhindrar OCR på halvskrivna ord eller pågående suddningar.
-- **Occlusionmask**: Person-segmentation (lätt modell) markerar skymda områden. Frames med hög mask-andel flaggas och hoppar över OCR. När masken försvinner tvingas ny keyframe.
-- **Wipe-detektion**: Kraftig ökning av ljusa pixlar och rörelse i en tile → markera som rensad; efterföljande stabila innehåll sparas som ny version.
-- **Pluggbar vision-backend**: `vision.py` exponerar ett gränssnitt; backend kan vara lokalt (`nougat`, `pix2tex`, `tesseract` med handskriftsmodell) eller API (MathPix/GPT-4o mini). Osäkra regioner kan eskaleras till starkare modell.
-- **Mattehantering**: Matteblock skickas till modell som kan producera LaTeX; övrig text körs i handskrifts-OCR. Behåller ritblock som bilder och lägger LaTeX/text separat.
-- **Export**: Markdown + referenser till sparade ritbilder; kan renderas till PDF. Topp-sammanfattning kan genereras via språkmodell om tillgänglig.
+### Filinnehåll
 
-## Modellstrategi (lokal först, cloud-senare)
-- Primär körning: lokala modeller (open source) för transkription (Whisper lokalt), handstil/matte (`nougat`, `pix2tex`, ev. Tesseract-handstil). Inga licensavgifter, kräver GPU/CPU.
-- Modularitet: `vision.py` och `audio.py` definierar ett backend-API (t.ex. `Transcriber`, `BoardRecognizer`) med enhetliga svar: text + osäkerhet/konfidens + ev. LaTeX. Lokala backends implementerar detta interface.
-- Uppgradering: Nya lokala modeller kan ersätta befintliga backends utan att ändra övrig pipeline.
-- Cloud-plugg: Lägg till en `remote`-backend som använder OpenAI/MathPix via samma interface. `config.py` styr prioritet: försök lokal, fall back till cloud, eller hybrid (skicka endast låg-konfidens regioner).
-- Säkerhetsventil: Cloud-stöd kan hållas avstängt tills API-nycklar finns; togglas i konfig.
-- Lokalmodell för tal: Whisper `small` (ca 466 MB) som standard, klarar svenska/engelska. Läggs lokalt (t.ex. `WHISPER_MODEL_DIR`) så ingen nätåtkomst krävs vid körning. Högre kvalitet: `medium` (~1.4 GB) eller `large` (~3 GB) kan väljas i config vid bättre hårdvara.
+#### transcript_sv.txt
+Rå eller lätt städad transkribering.
 
-## Körningsprofiler och prestanda (lokal laptop, macOS/Windows)
-- Quick mode (live): Whisper medium/small (CPU/Apple Silicon), enkel handskriftsmodell, adaptiv sampling (SSIM/delta), glest fallback (20–30 s), tile-uppdatering endast vid förändring, nedskalad tavla/ROI. Syfte: körbar på MacBook Air/Windows-laptop utan kraftig GPU.
-- Full mode (offline): Tyngre modeller (Whisper large eller större handskrifts/matte), körs efter inspelning. Samma pipeline men högre OCR-kvalitet och tätare sampling kan aktiveras.
-- Acceleration: Använd fp16/int8 där stöd finns (Metal/CoreML på Apple Silicon; CUDA om Nvidia finns). På Windows utan GPU håll modeller små.
-- Resursstyrning via config: trösklar för SSIM, tile-grid, stabiliseringsfönster, fallback-intervall, modellval och max samtidiga OCR-jobb. Gör det möjligt att skruva ned kraven på svagare maskin.
-- Minimal lokalkrav: ffmpeg för dekodning, SSIM/delta i CPU går snabbt på nedskalade frames; OCR körs bara på ändrade tiles för att spara CPU.
+#### transcript_sv.srt
+Tidskodad version av transkriberingen.
 
-## Inspelning, postprocessing och städning
-- Sessionsmappar: råmaterial (ljud, keyframes, manifest) sparas under `captures/run-<timestamp>/` så att postprocessing kan köras efter stopp och återupptas vid krasch.
-- Postprocessing-trigger: startar när användaren stoppar inspelningen. Ordning: 1) flush/stäng inspelning, 2) transkribera ljud, 3) OCR/vision på keyframes/tiles, 4) align, 5) generera Markdown/PDF.
-- Städpolicy: när PDF/MD är producerad och verifierad, rensa sessionens temporära filer (ljud, frames). Behåll endast slutdokument och ev. logg. Config-flagga `keep_intermediates` kan styra om man vill behålla rådata.
-- Tidsåtgång postprocessing (estimat): Quick mode på MacBook Air/CPU med Whisper medium och adaptiv sampling ~0.5–1.5× realtid för 30–60 min ljud. Vision/OCR tillkommer (några minuter för 300–600 keyframes/timme med lätta modeller). Fullmode med tyngre modeller tar längre.
-- Robusthet: skriv manifest och delresultat inkrementellt (JSON/logg) så att en krasch/batteridöd inte förlorar allt. Vid uppstart kan användaren välja att återuppta/efterbearbeta en ofullständig session. Rensa inte pågående sessionsfiler förrän postprocessing är klar och PDF finns.
-- Feedback: UI visar inspelningstid, antal sparade keyframes, och progress för postprocessing.
+#### board_summary.md
+Lokal första sammanställning från appen.
 
-## Tidsstämplingsstrategi
-- Keyframes vid SSIM-underskridande (t.ex. 0.97) mellan nedskalade frames.
-- Fallback-keyframe var 20–30 s om ingen förändring detekteras.
-- Efter occlusion: tvingad keyframe.
-- Versionering per tile: varje stabilt läge sparas med `t_start, t_end`. Raderade tiles får ny version när nytt innehåll uppstår.
+#### timeline.json
+Maskinläsbar tidslinje med koppling mellan tal, frames och eventuella OCR-resultat.
 
-## Datatyper (skiss)
-- Transkription: lista av `{start, end, text}`.
-- Frame-event: `{ts, keyframe_path, occluded: bool}`.
-- Tile-version: `{tile_id, start, end, text?, latex?, image_path?}`.
-- Align-block: `{start, end, speech_text, board_text[], board_images[]}`.
+#### manifest.json
+Metadata om sessionen.
 
-## Nästa steg
-- Skapa `src/ai_pipeline/` med stubbar enligt ovan och koppla in minimal pipeline från `main.py`.
-- Välja initial backend (t.ex. Whisper + enkel handskrifts-OCR) och sätta rimliga default-trösklar för SSIM, tile-grid, stabiliseringsfönster.
+Exempel:
+- datum
+- språk
+- vald profil
+- använd backend
+- använd modell
+- antal frames
+- exportversion
 
-## Driftsnoteringar (Qt/venv, macOS + Homebrew Python 3.12)
-- Använd alltid projektets venv: `source .venv/bin/activate`. Venv är byggd med `/opt/homebrew/bin/python3.12`.
-- Kör appen via VS Code-launchen “Whiteboard (PySide6)” eller via `./run.sh`. Båda sätter QT/DYLD-paths till venv:ets PySide6 (inte Homebrew-globala).
-- Om Cocoa-plugin-fel återkommer: rensa QT_* och DYLD_* i terminalen, sedan kör `./run.sh` eller sätt env manuellt:
-  ```
-  unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QT_QPA_PLATFORM DYLD_FRAMEWORK_PATH DYLD_LIBRARY_PATH
-  QT_MAC_DISABLE_LIBRARY_VALIDATION=1 \
-  QT_QPA_PLATFORM_PLUGIN_PATH=.venv/lib/python3.12/site-packages/PySide6/Qt/plugins/platforms \
-  QT_PLUGIN_PATH=.venv/lib/python3.12/site-packages/PySide6/Qt/plugins \
-  DYLD_FRAMEWORK_PATH=.venv/lib/python3.12/site-packages/PySide6/Qt/lib \
-  DYLD_LIBRARY_PATH=.venv/lib/python3.12/site-packages/PySide6/Qt/lib \
-  QT_QPA_PLATFORM=cocoa \
-  python src/main.py
-  ```
-- Om venv tas bort: återskapa med `/opt/homebrew/bin/python3.12 -m venv .venv && source .venv/bin/activate && pip install -r Requirements.txt`. PySide6 installeras i venv och env-variablerna ovan pekar då rätt.
-- Whisper (svenska): default språk i config är `whisper_language="sv"`. Har du en lokal modell, sätt `WHISPER_MODEL_PATH=whisper_models/<modell>.pt` eller lägg filen i `whisper_models/`. För andra språk, ändra `whisper_language` i config.
+#### keyframes/
+Utvalda bilder från whiteboardförloppet.
+
+#### prompt_chatgpt.txt
+Färdig prompt som användaren kan klistra in i ChatGPT.
+
+## 5.4 Promptdesign för ChatGPT
+
+Prompten ska vara uppgiftsstyrd och försiktig.
+
+Den ska instruera ChatGPT att:
+- läsa transkription och whiteboardbilder tillsammans
+- återskapa innehåll pedagogiskt och strukturerat
+- markera osäkerheter i tolkningen
+- inte hitta på innehåll som inte stöds av materialet
+- skapa både kort och lång sammanfattning
+- lyfta centrala begrepp, formler och resonemang
+
+Prompten ska genereras av appen och följa en fast mall med versionshantering.
+
+## 5.5 Framtida kärnfunktioner för föreläsningsförståelse
+
+### Board state
+Systemet ska modellera tavlan som ett tillstånd över tid, inte bara som enskilda bilder.
+
+### Delområden/regioner
+Systemet ska kunna analysera förändringar i tavlans olika delar, så att nya tillägg och borttagningar kan upptäckas lokalt på ytan.
+
+### Stabilisering
+Systemet ska kunna avgöra när ett tavelinnehåll verkar vara tillräckligt stabilt för att betraktas som en färdig sektion eller deluppgift.
+
+### Wipe-detektion
+Systemet ska kunna upptäcka när innehåll suddas bort helt eller delvis, så att gamla anteckningsblock kan avslutas och nya kan börja.
+
+### Sektionering
+Systemet ska kunna dela upp en lektion i meningsfulla sektioner baserat på tavelförändring, stabilisering, wipe och lärarens tal.
+
+### Anteckningsenheter
+Systemet ska på sikt skapa anteckningsenheter som innehåller:
+- tavlans innehåll i ett visst tillstånd
+- tillhörande lärarprat
+- start/sluttid
+- osäkerheter
+- eventuell koppling till uppgift, delproblem eller nytt block på tavlan
+
+---
+
+## 6. Arkitekturpåverkan
+
+## 6.1 Nuvarande läge
+Projektet har redan:
+- GUI och kameraflöde
+- keystone, zoom och pan
+- grundstruktur för AI-pipeline
+- konfiguration med profiler
+- exportväg till ChatGPT-underlag
+- promptgenerering
+- metadata och tidslinje
+
+Det betyder att produktens grund inte bara är AI-bearbetning, utan också en faktisk live-applikation för att visa och förbättra whiteboardinnehåll i realtid.
+
+## 6.2 Nya eller förstärkta komponenter
+För att nå målbilden behöver följande byggas eller stärkas:
+
+### Konfigurationslager
+- tydlig profilmodell: quick / recommended / full_local
+- recommended ska vara standard
+- recommended ska använda faster-whisper small
+
+### Transkriptionslager
+- robust lokal körning via faster-whisper
+- tydlig hantering av språk, fel och progress
+
+### Exportlager
+- stabil sessionsstruktur
+- generering av manifest, timeline och prompt
+- robust filnamngivning och versionshantering
+
+### Board state-lager
+- representation av tavlans tillstånd över tid
+- stöd för delta per region
+- stöd för stabilisering och wipe-detektion
+
+### Händelselager
+- semantiska events för start, stabilisering, wipe och ny sektion
+- koppling mellan taveltillstånd och transkriptsegment
+
+### Anteckningslager
+- bygg block som liknar elevanteckningar
+- synka tavelinnehåll med lärarens förklaring
+- skapa tydliga sektioner
+
+### GUI-lager
+- kameravisning och kameraval
+- tydlig hantering av keystone
+- tydlig hantering av zoom och pan
+- val av profil
+- knapp eller meny för export till ChatGPT
+- tydlig återkoppling om vad som exporterats
+
+### Testlager
+- manuella testfall
+- verifiering av exportstruktur
+- verifiering av promptinnehåll
+- verifiering av att recommended verkligen använder faster-whisper small
+- verifiering av livefunktioner som kamera, zoom, pan och keystone
+- verifiering av sektionering och wipe-detektion i senare steg
+
+---
+
+## 7. Icke-funktionella krav
+
+### 7.1 Förutsägbarhet
+Exporten ska alltid ge samma struktur så att användaren lär sig flödet.
+
+### 7.2 Felrobusthet
+Om en del av lokal analys inte lyckas ska export ändå kunna skapas med det material som finns.
+
+### 7.3 Transparens
+Användaren ska kunna se vilken profil som användes och vad som faktiskt exporterades.
+
+### 7.4 Utbyggbarhet
+Designen ska göra det enkelt att senare lägga till:
+- bättre OCR-backend
+- förbättrad board state
+- fler exportmål
+- djupare lokal analys
+
+### 7.5 Låg hårdvarutröskel
+Standardläget ska vara realistiskt att använda på en MacBook Air.
+
+### 7.6 Meningsfull synk framför rå precision
+Systemet ska prioritera att rätt tal kopplas till rätt tavelsektion, även om råtranskriptionen inte alltid är perfekt ord för ord.
+
+---
+
+## 8. Avgränsning
+
+Detta steg omfattar inte:
+- fullständig automatisk integration mot ChatGPT API
+- perfekt handskriftsigenkänning
+- full matematikparser
+- avancerad multimodal molnpipeline
+
+Detta steg omfattar:
+- kärnflödet för live whiteboardvisning
+- zoom, pan och keystone som del av produktens grundfunktion
+- faster-whisper small som lokal standardväg
+- export av välstrukturerat AI-underlag
+- tydlig promptgenerering
+- ett användarvänligt flöde för lokal bearbetning och frivillig ChatGPT-efterbearbetning
+- nästa steg mot board state, wipe-detektion och synkade anteckningsblock
+
+---
+
+## 9. Definition of done för denna fas
+
+Den nuvarande fasen är klar när följande stämmer:
+
+1. Appen har en tydlig standardprofil som använder faster-whisper small.
+2. Användaren kan använda live whiteboardvisning med kamera, zoom, pan och keystone.
+3. Användaren kan exportera ett komplett ChatGPT-underlag från GUI:t.
+4. Exporten innehåller rätt filer enligt specificerad struktur.
+5. Prompten genereras automatiskt och är användbar direkt.
+6. Det finns testbara kontrollpunkter för varje del.
+7. Flödet kan demonstreras från live-användning eller inspelning till export utan manuella specialsteg.
+
+## 9.2 Definition of done för nästa fas
+Nästa fas är klar när systemet kan:
+1. identifiera stabila tavelsektioner
+2. upptäcka när tavlan suddas eller en ny uppgift börjar
+3. koppla transkriptsegment till rätt tavelsektion
+4. exportera anteckningsblock som tydligt motsvarar separata delar av lektionen
+
+---
+
+## 10. Rekommenderad fortsättning efter denna fas
+
+Nästa fokus ska vara:
+1. board-state-logik över tid
+2. wipe-detektion
+3. stable section detection
+4. note units som synkar tavla och tal
+5. därefter förbättrad OCR/vision-backend
+6. därefter bättre lokal sammanställning före ChatGPT-export
+
+Detta ger bäst progression från fungerande produktgrund till verkligt användbara föreläsningsanteckningar.
+
