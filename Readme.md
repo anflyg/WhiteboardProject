@@ -33,6 +33,7 @@ Vid stop av AI-inspelning skapas ett exportpaket i `exports/session_YYYY-MM-DD_H
 - `transcript_sv.txt`
 - `transcript_sv.srt`
 - `board_summary.md`
+- `prompt_chatgpt.txt` (färdig prompt för att använda underlaget i ChatGPT)
 - `manifest.json`
 - `timeline.json`
 - `keyframes/`

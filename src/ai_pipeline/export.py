@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 from .align import AlignBlock
 from .audio import TranscriptSegment
 
+PROMPT_CHATGPT_VERSION = "v1"
+
 
 def render_markdown_document(blocks: List[AlignBlock], out_path: Path) -> Path:
     """
@@ -147,6 +149,42 @@ def _stable_session_dir(export_root: Path, started_at: Optional[str] = None) -> 
         suffix += 1
 
 
+def _build_chatgpt_prompt(
+    *,
+    session_name: str,
+    transcript_placeholder: bool,
+    board_placeholder: bool,
+    keyframe_count: int,
+) -> str:
+    material_status = [
+        f"- `transcript_sv.txt` ({'placeholder' if transcript_placeholder else 'innehåll finns'})",
+        "- `transcript_sv.srt` (tidskodad transkription eller placeholder)",
+        f"- `board_summary.md` ({'placeholder' if board_placeholder else 'innehåll finns'})",
+        "- `timeline.json` (maskinläsbar tidslinje)",
+        f"- `keyframes/` ({keyframe_count} bild(er))",
+        "- `manifest.json` (metadata och placeholders)",
+    ]
+    return (
+        f"Promptversion: {PROMPT_CHATGPT_VERSION}\n"
+        f"Session: {session_name}\n\n"
+        "Du får ett underlag från en föreläsningssession. Läs allt material innan du svarar.\n\n"
+        "Material som bifogas:\n"
+        + "\n".join(material_status)
+        + "\n\n"
+        "Instruktioner:\n"
+        "1. Läs transkription och whiteboardbilder tillsammans och sammanfoga informationen.\n"
+        "2. Återskapa innehållet pedagogiskt och strukturerat, med tydliga rubriker.\n"
+        "3. Markera osäkerheter tydligt med rubriken 'Osäkert/ej verifierat'.\n"
+        "4. Hitta inte på information som inte stöds av underlaget.\n"
+        "5. Om underlag saknas eller är markerat som placeholder, säg det uttryckligen.\n"
+        "6. Leverera både:\n"
+        "   - En kort sammanfattning (5-10 punkter)\n"
+        "   - En längre sammanfattning med förklaringar\n"
+        "7. Lyft centrala begrepp, resonemang och eventuella formler.\n"
+        "8. Skriv på tydlig svenska.\n"
+    )
+
+
 def export_session_package(
     export_root: Path,
     *,
@@ -195,10 +233,17 @@ def export_session_package(
     txt_content, txt_placeholder = _build_transcript_txt(transcript, placeholder_reason=transcript_error)
     srt_content, srt_placeholder = _build_transcript_srt(transcript, placeholder_reason=transcript_error)
     board_content, board_placeholder = _build_board_summary(align_blocks)
+    prompt_content = _build_chatgpt_prompt(
+        session_name=session_dir.name,
+        transcript_placeholder=txt_placeholder,
+        board_placeholder=board_placeholder,
+        keyframe_count=len(timeline_keyframes),
+    )
 
     (session_dir / "transcript_sv.txt").write_text(txt_content, encoding="utf-8")
     (session_dir / "transcript_sv.srt").write_text(srt_content, encoding="utf-8")
     (session_dir / "board_summary.md").write_text(board_content, encoding="utf-8")
+    (session_dir / "prompt_chatgpt.txt").write_text(prompt_content, encoding="utf-8")
 
     timeline = {
         "schema_version": 1,
@@ -223,10 +268,12 @@ def export_session_package(
             "transcript_sv.txt": "transcript_sv.txt",
             "transcript_sv.srt": "transcript_sv.srt",
             "board_summary.md": "board_summary.md",
+            "prompt_chatgpt.txt": "prompt_chatgpt.txt",
             "manifest.json": "manifest.json",
             "timeline.json": "timeline.json",
             "keyframes": "keyframes/",
         },
+        "prompt_template_version": PROMPT_CHATGPT_VERSION,
         "placeholders": {
             "transcript_sv.txt": txt_placeholder,
             "transcript_sv.srt": srt_placeholder,
