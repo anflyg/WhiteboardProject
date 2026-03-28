@@ -40,6 +40,7 @@ Vid stop av AI-inspelning skapas ett exportpaket i `exports/session_YYYY-MM-DD_H
 
 Om underlag saknas skrivs tydlig placeholder i respektive fil i stället för att filen uteblir.
 I GUI kan du exportera via **AI → Exportera för ChatGPT** (`Ctrl+Shift+X`).
+`manifest.json` innehåller metadata om profil/backend/modell/språk och `timeline.json` innehåller en utbyggbar tidslinje med segment, keyframes och events.
 
 ## Kör
 ```bash
@@ -79,3 +80,21 @@ python src/main.py --list-cameras  # lista tillgängliga kameror och avsluta
 ## Samlad dokumentation
 Se `docs/overview.md` för en sammanhängande beskrivning av app + AI-pipeline och UML-översikt.
 För macOS/Qt-startproblem (cocoa-plugin) se `docs/qt_troubleshooting.md`.
+
+## Manuell acceptanstest (Paket 1–6)
+1. Starta appen: `python src/main.py`.
+2. Verifiera standardläge vid AI-start i konsol/statusbar:
+   `AI-profil: recommended | Modell: small | Backend: faster-whisper`.
+3. Starta AI-inspelning (`Ctrl+Shift+S`), låt den gå några sekunder, stoppa (`Ctrl+Shift+E`).
+4. Trigga export från GUI: **AI → Exportera för ChatGPT** (`Ctrl+Shift+X`).
+5. Bekräfta att popup visar att export lyckades och var den sparades.
+6. Öppna senaste `exports/session_*` och kontrollera att följande finns:
+   - `transcript_sv.txt`
+   - `transcript_sv.srt`
+   - `board_summary.md`
+   - `prompt_chatgpt.txt`
+   - `manifest.json`
+   - `timeline.json`
+   - `keyframes/`
+7. Kontrollera i `manifest.json` att metadata finns (`profile`, `transcription_backend`, `transcription_model`, `transcription_language`, `keyframe_count`, `export_version`, `prompt_template_version`).
+8. Kontrollera i `timeline.json` att `transcript_segments`, `keyframes` och `events` finns.

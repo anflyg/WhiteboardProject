@@ -4,7 +4,7 @@ Det här dokumentet sammanfattar README och designanteckningarna till en helhets
 
 ## Syfte och funktion
 - Visa whiteboard via webbkamera med zoom/pan/keystone och menystyrning (PySide6 + OpenCV).
-- Spela in ljud, extrahera nyckelbilder från tavlan och koppla tal (Whisper) med tavlans innehåll till ett exporterat dokument (Markdown → PDF/HTML).
+- Spela in ljud, extrahera nyckelbilder från tavlan och koppla tal (faster-whisper) med tavlans innehåll till ett exporterat ChatGPT-underlag.
 
 ## Krav
 - **Funktionella:** transkribera tal med tidsstämplar; extrahera tavlans text/handstil/matte; spara ritblock som bilder; hantera occlusioner; versionera små ändringar; exportera tal + tavlans innehåll tidsmässigt.
@@ -23,10 +23,10 @@ python src/main.py --list-cameras        # lista kameror och avsluta
 #   QT_MAC_DISABLE_LIBRARY_VALIDATION=1 QT_QPA_PLATFORM_PLUGIN_PATH=.venv/lib/python3.12/site-packages/PySide6/Qt/plugins/platforms QT_PLUGIN_PATH=.venv/lib/python3.12/site-packages/PySide6/Qt/plugins DYLD_FRAMEWORK_PATH=.venv/lib/python3.12/site-packages/PySide6/Qt/lib DYLD_LIBRARY_PATH=.venv/lib/python3.12/site-packages/PySide6/Qt/lib QT_QPA_PLATFORM=cocoa python src/main.py
 ```
 
-### Whisper offline (ingen nedladdning)
-- Standardprofilen är `recommended` med Whisper `turbo`. Lägg `turbo.pt` i `whisper_models/` bredvid projektet eller sätt `WHISPER_MODEL_PATH=/full/path/till/turbo.pt`.
-- Alternativt `WHISPER_MODEL_DIR=/path/till/katalog/med/modellen`.
+### Transkribering (faster-whisper)
+- Standardprofilen är `recommended` med modell `small` via backend `faster-whisper`.
 - `ffmpeg` krävs för transkription (installera via t.ex. `brew install ffmpeg`).
+- Valet är optimerat för lättare lokal körning på MacBook Air.
 
 ## Arkitektur i korthet (MVC-inspirerad)
 - **View/Controller:** `WhiteboardWindow` (`src/app.py`) + `VideoLabel` (Qt). Menyer för kamera, vy, keystone och hjälp. Mus/shortcuts kopplas till state.
@@ -42,12 +42,12 @@ python src/main.py --list-cameras        # lista kameror och avsluta
 - `exports/session_*/` – färdiga exportsessioner för ChatGPT-underlag.
 
 ## AI-pipelinen (designsammanfattning)
-- **Audio:** `AudioRecorder` spelar in WAV; `Transcriber`/`WhisperTranscriber` transkriberar med tidsstämplar.
+- **Audio:** `AudioRecorder` spelar in WAV; `Transcriber`/`FasterWhisperTranscriber` transkriberar med tidsstämplar.
 - **Frames:** `FrameExtractor` tar keyframes via förändringsdetektion (SSIM/delta) + fallback-intervall (quick-läge 30 s).
 - **Board state:** `BoardState` delar tavlan i tiles, versionerar ändringar, hanterar wipe/occlusion (framtida arbete).
 - **Vision:** `BoardRecognizer`-interface i `vision.py` för text/handstil/matte; pluggbar backend (lokal/remote).
 - **Align:** `align.py` kopplar transkriptsegment till tavlans innehåll och bilder (närmast i tid).
-- **Export:** `export.py` renderar Markdown/HTML med tal + tavlans text/bilder.
+- **Export:** `export.py` skapar ett stabilt ChatGPT-underlag med transkriptfiler, prompt, metadata (`manifest.json`) och tidslinje (`timeline.json`).
 - **Config:** `config.py` styr modellval, trösklar (SSIM), fallback-intervall, tile-grid, paths (quick/recommended/full_local-profiler).
 
 ## Tidsstämpling och sampling
@@ -74,18 +74,18 @@ python src/main.py --list-cameras        # lista kameror och avsluta
 ## Prestanda och resurser
 - Snabb sampling/SSIM på CPU med nedskalade frames; tiles minskar OCR-belastning.
 - Använd fp16/int8 där möjligt (Metal/CoreML på Apple Silicon; CUDA på Nvidia).
-- På svag hårdvara: håll små modeller (Whisper tiny), färre tiles, längre fallback-intervall.
+- På svag hårdvara: håll små modeller (faster-whisper `small`/`tiny`), färre tiles, längre fallback-intervall.
 
 ## Körprofiler
-- **Quick:** Whisper tiny, nedskalad bild, adaptiv sampling + fallback var 30 s, 2x3 tiles.
-- **Recommended (default):** Whisper turbo, balanserade trösklar, fallback var 20 s, 3x4 tiles.
-- **Full local:** Whisper large, tätare sampling, fler tiles (4x5), högre lokal kvalitet.
+- **Quick:** modell `tiny`, nedskalad bild, adaptiv sampling + fallback var 30 s, 2x3 tiles.
+- **Recommended (default):** modell `small` med backend `faster-whisper`, balanserade trösklar, fallback var 20 s, 3x4 tiles.
+- **Full local:** modell `large`, tätare sampling, fler tiles (4x5), högre lokal kvalitet.
 
 ## Körflöde (inspelning → export)
 1) Starta AI-inspelning i appen (REC). Skapar `captures/run-<ts>/` med audio + frames.
 2) Under inspelning: FrameExtractor triggar keyframes (förändring eller fallback). Audio spelas in parallellt.
-3) Stoppa inspelning: postprocess körs – transkription, align, och export till `exports/session_YYYY-MM-DD_HH-MM/`.
-4) Export inkluderar kopierade frames och audio för spårbarhet.
+3) Stoppa inspelning eller välj **AI → Exportera för ChatGPT**: postprocess körs – transkription, align och export till `exports/session_YYYY-MM-DD_HH-MM/`.
+4) Export inkluderar `prompt_chatgpt.txt`, `manifest.json`, `timeline.json` och `keyframes/`.
 
 ## Vidareutveckling (ur design.md)
 - Rörelse/occlusionmask före OCR, tvingad keyframe efter occlusion.
@@ -118,7 +118,7 @@ classDiagram
     class TileVersion
     class AudioRecorder
     class Transcriber
-    class WhisperTranscriber
+    class FasterWhisperTranscriber
     class DummyTranscriber
     class TranscriptSegment
     class BoardRecognizer
@@ -137,7 +137,7 @@ classDiagram
     FrameExtractor --> FrameEvent
     BoardState --> TileVersion
 
-    Transcriber <|-- WhisperTranscriber
+    Transcriber <|-- FasterWhisperTranscriber
     Transcriber <|-- DummyTranscriber
     BoardRecognizer <|-- DummyBoardRecognizer
     BoardRecognizer --> BoardRecognitionResult
@@ -170,7 +170,7 @@ classDiagram
       |       ^      ^
       |       |      |
       |   +-----------+-----------+
-      |   |WhisperTranscriber     |
+      |   |FasterWhisperTranscriber|
       |   |DummyTranscriber       |
       |   +-----------------------+
       v
@@ -204,7 +204,7 @@ classDiagram
 - [x] FrameExtractor med enkel delta/fallback + export till stabil sessionsstruktur under `exports/session_*/`.
 - [x] Manifest förbättrat: lagrar orsak (delta/interval/wipe/too_soon) och delta-värde per frame; hoppar över mörka/occluded frames.
 - [x] Qt-startfix: sätter QT-plugin- och DYLD-sökvägar i koden istället för exec-restart.
-- [x] Whisper språkstyrning: default svenska via `whisper_language` (kan ändras i config/env).
+- [x] faster-whisper språkstyrning: default svenska via `whisper_language` (kan ändras i config/env).
 - [ ] Occlusion-/rörelsemask och wipe-detektion; tvingad keyframe efter occlusion.
 - [ ] Tile-baserad BoardState med versionering per tile och stabiliseringsfönster; OCR/handstil/matte per tile.
 - [ ] Förbättrad align: koppla transcript till tile-versioner och bilder före/efter inom tidsfönster.
