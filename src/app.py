@@ -759,9 +759,11 @@ class WhiteboardWindow(QMainWindow):
                 transcript_error=effective_transcript_error,
             )
             self.last_export_dir = export_dir
+            print(f"[EXPORT] success session={export_dir.name}", flush=True)
             self.statusBar().showMessage(f"Export skapad: {export_dir.name}")
         except Exception as exc:
             self.last_export_error = str(exc)
+            print(f"[EXPORT] failure error={exc}", flush=True)
             self.statusBar().showMessage(f"Export misslyckades: {exc}")
             if raise_on_error:
                 raise
@@ -791,6 +793,7 @@ class WhiteboardWindow(QMainWindow):
             "profile": self.ai_config.name,
             "whisper_model": self.ai_config.whisper_model,
             "transcription_backend": self.transcriber_backend,
+            "transcription_language": getattr(self.ai_config, "whisper_language", None),
             "capture_dir": str(self.session_dir),
             "audio": "audio.wav",
             "frames": [],

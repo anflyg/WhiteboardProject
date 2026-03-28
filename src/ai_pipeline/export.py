@@ -12,6 +12,9 @@ from typing import Any, Dict, List, Optional
 from .align import AlignBlock
 from .audio import TranscriptSegment
 
+EXPORT_PACKAGE_VERSION = "v2"
+MANIFEST_SCHEMA_VERSION = 2
+TIMELINE_SCHEMA_VERSION = 2
 PROMPT_CHATGPT_VERSION = "v1"
 
 
@@ -149,6 +152,70 @@ def _stable_session_dir(export_root: Path, started_at: Optional[str] = None) -> 
         suffix += 1
 
 
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _build_timeline(transcript: List[TranscriptSegment], keyframes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    transcript_entries: List[Dict[str, Any]] = []
+    for idx, seg in enumerate(transcript, start=1):
+        start = _to_float(getattr(seg, "start", 0.0), 0.0)
+        end = _to_float(getattr(seg, "end", start), start)
+        if end < start:
+            end = start
+        text = (getattr(seg, "text", "") or "").strip()
+        segment_id = f"seg_{idx:04d}"
+        linked_keyframes = [
+            kf.get("frame_id")
+            for kf in keyframes
+            if _to_float(kf.get("timestamp"), 0.0) >= (start - 5.0)
+            and _to_float(kf.get("timestamp"), 0.0) <= (end + 5.0)
+            and kf.get("frame_id")
+        ]
+        transcript_entries.append(
+            {
+                "segment_id": segment_id,
+                "start": start,
+                "end": end,
+                "text": text,
+                "linked_keyframe_ids": linked_keyframes,
+            }
+        )
+
+    events: List[Dict[str, Any]] = []
+    for kf in keyframes:
+        events.append(
+            {
+                "event_id": f"evt_{len(events)+1:04d}",
+                "type": "keyframe",
+                "timestamp": _to_float(kf.get("timestamp"), 0.0),
+                "ref_id": kf.get("frame_id"),
+            }
+        )
+    for seg in transcript_entries:
+        events.append(
+            {
+                "event_id": f"evt_{len(events)+1:04d}",
+                "type": "transcript_segment",
+                "timestamp": _to_float(seg.get("start"), 0.0),
+                "ref_id": seg.get("segment_id"),
+            }
+        )
+    events.sort(key=lambda e: (e.get("timestamp", 0), e.get("type", "")))
+
+    return {
+        "schema_version": TIMELINE_SCHEMA_VERSION,
+        "transcript_segments": transcript_entries,
+        "keyframes": keyframes,
+        "events": events,
+        # Reserved for future OCR/math/LLM layer outputs.
+        "analysis_tracks": [],
+    }
+
+
 def _build_chatgpt_prompt(
     *,
     session_name: str,
@@ -198,13 +265,16 @@ def export_session_package(
     Export a stable ChatGPT-ready session package with predictable structure.
     Always creates required files, using placeholders when data is missing.
     """
+    session_manifest = session_manifest or {}
     export_root.mkdir(parents=True, exist_ok=True)
     session_dir = _stable_session_dir(export_root, started_at=session_manifest.get("started_at"))
     keyframes_dir = session_dir / "keyframes"
     keyframes_dir.mkdir(parents=True, exist_ok=True)
 
+    warnings: List[str] = []
     timeline_keyframes: List[Dict[str, Any]] = []
-    for frame in session_manifest.get("frames", []) or []:
+    for idx, frame in enumerate(session_manifest.get("frames", []) or [], start=1):
+        frame = frame or {}
         src_path = None
         rel = frame.get("path", "")
         if rel and source_session_dir:
@@ -217,14 +287,16 @@ def export_session_package(
             try:
                 copy2(src_path, dst_path)
                 copied = True
-            except Exception:
+            except Exception as exc:
                 copied = False
+                warnings.append(f"Kunde inte kopiera keyframe '{rel}': {exc}")
         timeline_keyframes.append(
             {
-                "timestamp": float(frame.get("timestamp", 0) or 0),
+                "frame_id": f"kf_{idx:04d}",
+                "timestamp": _to_float(frame.get("timestamp", 0), 0.0),
                 "path": f"keyframes/{target_name}",
                 "reason": frame.get("reason", ""),
-                "delta": float(frame.get("delta", 0) or 0),
+                "delta": _to_float(frame.get("delta", 0), 0.0),
                 "occluded": bool(frame.get("occluded", False)),
                 "copied": copied,
             }
@@ -245,25 +317,33 @@ def export_session_package(
     (session_dir / "board_summary.md").write_text(board_content, encoding="utf-8")
     (session_dir / "prompt_chatgpt.txt").write_text(prompt_content, encoding="utf-8")
 
-    timeline = {
-        "schema_version": 1,
-        "session": session_dir.name,
-        "transcript_segments": [
-            {"start": float(seg.start), "end": float(seg.end), "text": seg.text}
-            for seg in transcript
-        ],
-        "keyframes": timeline_keyframes,
+    timeline = _build_timeline(transcript, timeline_keyframes)
+    timeline["session"] = session_dir.name
+    timeline["generated_at"] = datetime.now().isoformat()
+    timeline["profile"] = session_manifest.get("profile")
+    timeline["transcription"] = {
+        "backend": session_manifest.get("transcription_backend"),
+        "model": session_manifest.get("whisper_model"),
+        "language": session_manifest.get("transcription_language"),
     }
     (session_dir / "timeline.json").write_text(json.dumps(timeline, indent=2, ensure_ascii=False), encoding="utf-8")
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "export_version": EXPORT_PACKAGE_VERSION,
         "session_name": session_dir.name,
         "exported_at": datetime.now().isoformat(),
         "source_run_id": session_manifest.get("run_id"),
         "source_capture_dir": session_manifest.get("capture_dir"),
+        "source_started_at": session_manifest.get("started_at"),
+        "source_ended_at": session_manifest.get("ended_at"),
         "profile": session_manifest.get("profile"),
-        "whisper_model": session_manifest.get("whisper_model"),
+        "transcription_backend": session_manifest.get("transcription_backend"),
+        "transcription_model": session_manifest.get("whisper_model"),
+        "transcription_language": session_manifest.get("transcription_language"),
+        "keyframe_count": len(timeline_keyframes),
+        "transcript_segment_count": len(timeline.get("transcript_segments", [])),
+        "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
         "files": {
             "transcript_sv.txt": "transcript_sv.txt",
             "transcript_sv.srt": "transcript_sv.srt",
@@ -279,6 +359,7 @@ def export_session_package(
             "transcript_sv.srt": srt_placeholder,
             "board_summary.md": board_placeholder,
         },
+        "warnings": warnings,
     }
     (session_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return session_dir
