@@ -216,6 +216,104 @@ def _build_timeline(transcript: List[TranscriptSegment], keyframes: List[Dict[st
     }
 
 
+def _build_note_units(
+    *,
+    board_state: Dict[str, Any],
+    transcript_segments: List[Dict[str, Any]],
+    keyframes: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Note units v1:
+    - create section intervals from board events (section_started -> next section_started)
+    - attach overlapping transcript segments and nearby keyframes
+    - include uncertainty flag when linkage is weak
+    """
+    board_events = board_state.get("events", []) if isinstance(board_state, dict) else []
+    section_starts: List[Dict[str, Any]] = []
+    section_stable_by_id: Dict[str, Dict[str, Any]] = {}
+
+    for evt in board_events:
+        evt_type = evt.get("event_type")
+        details = evt.get("details") or {}
+        section_id = details.get("section_id")
+        if evt_type == "section_started" and section_id:
+            section_starts.append(
+                {
+                    "section_id": section_id,
+                    "start": _to_float(evt.get("timestamp"), 0.0),
+                    "event_id": evt.get("event_id"),
+                    "reason": details.get("reason", ""),
+                }
+            )
+        elif evt_type == "section_stable" and section_id:
+            section_stable_by_id[section_id] = {
+                "timestamp": _to_float(evt.get("timestamp"), 0.0),
+                "event_id": evt.get("event_id"),
+            }
+
+    if not section_starts:
+        return []
+
+    section_starts.sort(key=lambda s: s["start"])
+    last_transcript_end = max((_to_float(s.get("end"), 0.0) for s in transcript_segments), default=0.0)
+    last_keyframe_ts = max((_to_float(k.get("timestamp"), 0.0) for k in keyframes), default=0.0)
+    timeline_end = max(last_transcript_end, last_keyframe_ts)
+
+    note_units: List[Dict[str, Any]] = []
+    for idx, sec in enumerate(section_starts):
+        start = sec["start"]
+        next_start = section_starts[idx + 1]["start"] if idx + 1 < len(section_starts) else timeline_end
+        end = max(start, next_start)
+        section_id = sec["section_id"]
+
+        linked_segments = [
+            seg for seg in transcript_segments
+            if _to_float(seg.get("end"), 0.0) >= start and _to_float(seg.get("start"), 0.0) <= end
+        ]
+        linked_keyframes = [
+            kf for kf in keyframes
+            if _to_float(kf.get("timestamp"), 0.0) >= (start - 2.0) and _to_float(kf.get("timestamp"), 0.0) <= (end + 2.0)
+        ]
+        stable_evt = section_stable_by_id.get(section_id)
+        weak_link = not linked_segments or not stable_evt
+
+        note_units.append(
+            {
+                "note_unit_id": f"nu_{idx+1:04d}",
+                "section_id": section_id,
+                "start": start,
+                "end": end,
+                "section_started_event_id": sec.get("event_id"),
+                "section_stable_event_id": stable_evt.get("event_id") if stable_evt else None,
+                "section_start_reason": sec.get("reason", ""),
+                "transcript_segments": [
+                    {
+                        "segment_id": seg.get("segment_id"),
+                        "start": _to_float(seg.get("start"), 0.0),
+                        "end": _to_float(seg.get("end"), 0.0),
+                        "text": seg.get("text", ""),
+                    }
+                    for seg in linked_segments
+                ],
+                "keyframe_refs": [
+                    {
+                        "frame_id": kf.get("frame_id"),
+                        "timestamp": _to_float(kf.get("timestamp"), 0.0),
+                        "path": kf.get("path"),
+                    }
+                    for kf in linked_keyframes
+                ],
+                "board_event_refs": [sec.get("event_id")] + ([stable_evt.get("event_id")] if stable_evt else []),
+                "uncertain_link": weak_link,
+                "uncertainty_reason": (
+                    "saknar_transcript_eller_section_stable"
+                    if weak_link else ""
+                ),
+            }
+        )
+    return note_units
+
+
 def _build_chatgpt_prompt(
     *,
     session_name: str,
@@ -318,6 +416,12 @@ def export_session_package(
     (session_dir / "prompt_chatgpt.txt").write_text(prompt_content, encoding="utf-8")
 
     timeline = _build_timeline(transcript, timeline_keyframes)
+    board_state_meta = session_manifest.get("board_state", {})
+    note_units = _build_note_units(
+        board_state=board_state_meta if isinstance(board_state_meta, dict) else {},
+        transcript_segments=timeline.get("transcript_segments", []),
+        keyframes=timeline_keyframes,
+    )
     timeline["session"] = session_dir.name
     timeline["generated_at"] = datetime.now().isoformat()
     timeline["profile"] = session_manifest.get("profile")
@@ -326,6 +430,7 @@ def export_session_package(
         "model": session_manifest.get("whisper_model"),
         "language": session_manifest.get("transcription_language"),
     }
+    timeline["note_units"] = note_units
     (session_dir / "timeline.json").write_text(json.dumps(timeline, indent=2, ensure_ascii=False), encoding="utf-8")
 
     manifest = {
@@ -343,8 +448,9 @@ def export_session_package(
         "transcription_language": session_manifest.get("transcription_language"),
         "keyframe_count": len(timeline_keyframes),
         "transcript_segment_count": len(timeline.get("transcript_segments", [])),
+        "note_unit_count": len(note_units),
         "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
-        "board_state": session_manifest.get("board_state", {}),
+        "board_state": board_state_meta if isinstance(board_state_meta, dict) else {},
         "files": {
             "transcript_sv.txt": "transcript_sv.txt",
             "transcript_sv.srt": "transcript_sv.srt",
