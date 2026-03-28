@@ -71,6 +71,9 @@ class BoardState:
         section_changed_ratio_threshold: float = 0.4,
         section_max_delta_multiplier: float = 1.4,
         min_section_gap_seconds: float = 8.0,
+        stable_max_delta_multiplier: float = 0.6,
+        stable_changed_tiles_ratio_threshold: float = 0.15,
+        min_stable_duration_seconds: float = 4.0,
     ) -> None:
         self.rows = rows
         self.cols = cols
@@ -81,6 +84,9 @@ class BoardState:
         self.section_changed_ratio_threshold = section_changed_ratio_threshold
         self.section_max_delta_multiplier = section_max_delta_multiplier
         self.min_section_gap_seconds = min_section_gap_seconds
+        self.stable_max_delta_multiplier = stable_max_delta_multiplier
+        self.stable_changed_tiles_ratio_threshold = stable_changed_tiles_ratio_threshold
+        self.min_stable_duration_seconds = min_stable_duration_seconds
         self.versions: List[TileVersion] = []
         self.frame_history: List[BoardFrameState] = []
         self.revisions: List[BoardRevision] = []
@@ -93,6 +99,9 @@ class BoardState:
         self._open_tile_version: Optional[TileVersion] = None
         self._last_gray_frame: Optional[np.ndarray] = None
         self._last_section_started_ts: Optional[float] = None
+        self._current_section_id: Optional[str] = None
+        self._current_section_stable: bool = False
+        self._last_unstable_ts: Optional[float] = None
 
     def update_frame(
         self,
@@ -145,6 +154,7 @@ class BoardState:
             revision_id=revision.revision_id,
             reason_key=reason_key,
             occluded=bool(occluded),
+            changed_tile_count=changed_tile_count,
             changed_ratio=changed_ratio,
             mean_tile_delta=mean_tile_delta,
             max_tile_delta=max_tile_delta,
@@ -175,6 +185,7 @@ class BoardState:
         revision_id: str,
         reason_key: str,
         occluded: bool,
+        changed_tile_count: int,
         changed_ratio: float,
         mean_tile_delta: float,
         max_tile_delta: float,
@@ -218,6 +229,9 @@ class BoardState:
             self._section_index += 1
             section_id = f"sec_{self._section_index:04d}"
             self._last_section_started_ts = timestamp
+            self._current_section_id = section_id
+            self._current_section_stable = False
+            self._last_unstable_ts = timestamp
             self._register_event(
                 event_type="section_started",
                 timestamp=timestamp,
@@ -226,6 +240,36 @@ class BoardState:
                 details={"section_id": section_id, "reason": section_reason},
             )
             detected.append("section_started")
+
+        # Stable section detection v1: low tile-change for a minimum duration,
+        # and not simultaneously in a new section/wipe event.
+        stable_max_delta = self.tile_delta_change_threshold * self.stable_max_delta_multiplier
+        stable_changed_tiles_limit = max(0, int(np.ceil(self.rows * self.cols * self.stable_changed_tiles_ratio_threshold)))
+        low_change = max_tile_delta <= stable_max_delta and changed_tile_count <= stable_changed_tiles_limit
+
+        if self._current_section_id and not wipe_detected and "section_started" not in detected:
+            if low_change:
+                if self._last_unstable_ts is None:
+                    self._last_unstable_ts = timestamp
+                elapsed_low_change = timestamp - self._last_unstable_ts
+                if (not self._current_section_stable) and elapsed_low_change >= self.min_stable_duration_seconds:
+                    self._current_section_stable = True
+                    self._register_event(
+                        event_type="section_stable",
+                        timestamp=timestamp,
+                        frame_id=frame_id,
+                        revision_id=revision_id,
+                        details={
+                            "section_id": self._current_section_id,
+                            "low_change_seconds": elapsed_low_change,
+                            "max_tile_delta": max_tile_delta,
+                            "changed_tile_count": changed_tile_count,
+                        },
+                    )
+                    detected.append("section_stable")
+            else:
+                self._last_unstable_ts = timestamp
+                self._current_section_stable = False
         return detected
 
     def _register_event(
@@ -337,6 +381,9 @@ class BoardState:
                 "event_count": len(self.events),
                 "section_count": self._section_index,
                 "wipe_count": sum(1 for e in self.events if e.event_type == "wipe_detected"),
+                "stable_section_count": sum(1 for e in self.events if e.event_type == "section_stable"),
+                "current_section_id": self._current_section_id,
+                "current_section_stable": self._current_section_stable,
                 "last_mean_tile_delta": self.frame_history[-1].mean_tile_delta if self.frame_history else 0.0,
                 "last_max_tile_delta": self.frame_history[-1].max_tile_delta if self.frame_history else 0.0,
             },
