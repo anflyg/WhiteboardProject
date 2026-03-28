@@ -5,8 +5,8 @@ First practical version for tracking board state over time.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -55,7 +55,6 @@ class BoardState:
         self.versions: List[TileVersion] = []
         self.frame_history: List[BoardFrameState] = []
         self.revisions: List[BoardRevision] = []
-        self._last_change_ts: Dict[Tuple[int, int], float] = {}
         self._frame_index = 0
         self._revision_index = 0
         self._open_revision_id: Optional[str] = None
@@ -68,20 +67,30 @@ class BoardState:
         reason: str = "",
         delta: float = 0.0,
         occluded: bool = False,
-    ) -> BoardFrameState:
+    ) -> List[TileVersion]:
         """
         Register a keyframe/frame-event in the board timeline.
         This is intentionally simple but real and used in runtime code path.
+        Returns the currently affected tile versions (non-empty in normal runtime).
         """
         self._frame_index += 1
         frame_id = f"bf_{self._frame_index:05d}"
         reason_key = (reason or "unknown").split(":", 1)[0]
+        changed_versions: List[TileVersion] = []
 
         if self._open_revision_id is None:
             self._start_revision(timestamp, reason_key, frame_id, frame_path)
+            if self._open_tile_version:
+                changed_versions.append(self._open_tile_version)
         elif not occluded and self._should_start_new_revision(reason_key):
             self._close_current_revision(timestamp)
+            if self.versions:
+                changed_versions.append(self.versions[-1])
             self._start_revision(timestamp, reason_key, frame_id, frame_path)
+            if self._open_tile_version:
+                changed_versions.append(self._open_tile_version)
+        elif self._open_tile_version and self._open_tile_version not in changed_versions:
+            changed_versions.append(self._open_tile_version)
 
         revision = self.revisions[-1]
         revision.last_frame_id = frame_id
@@ -99,7 +108,7 @@ class BoardState:
             revision_id=revision.revision_id,
         )
         self.frame_history.append(frame)
-        return frame
+        return changed_versions
 
     def _should_start_new_revision(self, reason_key: str) -> bool:
         return reason_key in {"first", "delta", "interval", "wipe"}

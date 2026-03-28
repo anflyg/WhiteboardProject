@@ -420,17 +420,19 @@ class WhiteboardWindow(QMainWindow):
                         delta=event.delta,
                         occluded=event.occluded,
                     )
-                board_frame = self.board_state.update_frame(
+                changed_versions = self.board_state.update_frame(
                     rel_ts,
                     frame_path=str(saved_path) if saved_path else None,
                     reason=event.reason,
                     delta=event.delta,
                     occluded=event.occluded,
                 )
+                board_frame = self.board_state.frame_history[-1]
                 print(
                     "[BOARD STATE] "
                     f"frame={board_frame.frame_id} rev={board_frame.revision_id} "
-                    f"reason={board_frame.reason or 'unknown'} ts={board_frame.timestamp:.2f}",
+                    f"reason={board_frame.reason or 'unknown'} ts={board_frame.timestamp:.2f} "
+                    f"changed_versions={len(changed_versions)}",
                     flush=True,
                 )
                 self.statusBar().showMessage(
