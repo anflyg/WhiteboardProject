@@ -435,7 +435,8 @@ class WhiteboardWindow(QMainWindow):
                     f"reason={board_frame.reason or 'unknown'} ts={board_frame.timestamp:.2f} "
                     f"changed_versions={len(changed_versions)} "
                     f"max_tile_delta={board_frame.max_tile_delta:.2f} "
-                    f"changed_tiles={board_frame.changed_tile_count}",
+                    f"changed_tiles={board_frame.changed_tile_count} "
+                    f"events={','.join(board_frame.detected_events) if board_frame.detected_events else '-'}",
                     flush=True,
                 )
                 self.statusBar().showMessage(

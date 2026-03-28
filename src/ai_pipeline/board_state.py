@@ -5,7 +5,7 @@ First practical version for tracking board state over time.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -34,6 +34,7 @@ class BoardFrameState:
     max_tile_delta: float
     changed_tile_count: int
     tile_deltas: Dict[str, float]
+    detected_events: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -48,6 +49,16 @@ class BoardRevision:
     occluded_frames: int = 0
 
 
+@dataclass
+class BoardSemanticEvent:
+    event_id: str
+    event_type: str
+    timestamp: float
+    frame_id: str
+    revision_id: str
+    details: Dict[str, object] = field(default_factory=dict)
+
+
 class BoardState:
     def __init__(
         self,
@@ -55,19 +66,33 @@ class BoardState:
         cols: int = 4,
         stabilization_seconds: float = 0.8,
         tile_delta_change_threshold: float = 6.0,
+        wipe_changed_ratio_threshold: float = 0.7,
+        wipe_mean_delta_multiplier: float = 1.8,
+        section_changed_ratio_threshold: float = 0.4,
+        section_max_delta_multiplier: float = 1.4,
+        min_section_gap_seconds: float = 8.0,
     ) -> None:
         self.rows = rows
         self.cols = cols
         self.stabilization_seconds = stabilization_seconds
         self.tile_delta_change_threshold = tile_delta_change_threshold
+        self.wipe_changed_ratio_threshold = wipe_changed_ratio_threshold
+        self.wipe_mean_delta_multiplier = wipe_mean_delta_multiplier
+        self.section_changed_ratio_threshold = section_changed_ratio_threshold
+        self.section_max_delta_multiplier = section_max_delta_multiplier
+        self.min_section_gap_seconds = min_section_gap_seconds
         self.versions: List[TileVersion] = []
         self.frame_history: List[BoardFrameState] = []
         self.revisions: List[BoardRevision] = []
+        self.events: List[BoardSemanticEvent] = []
         self._frame_index = 0
         self._revision_index = 0
+        self._event_index = 0
+        self._section_index = 0
         self._open_revision_id: Optional[str] = None
         self._open_tile_version: Optional[TileVersion] = None
         self._last_gray_frame: Optional[np.ndarray] = None
+        self._last_section_started_ts: Optional[float] = None
 
     def update_frame(
         self,
@@ -113,6 +138,17 @@ class BoardState:
         mean_tile_delta = float(np.mean(delta_values)) if delta_values else 0.0
         max_tile_delta = float(np.max(delta_values)) if delta_values else 0.0
         changed_tile_count = sum(1 for d in delta_values if d >= self.tile_delta_change_threshold)
+        changed_ratio = (changed_tile_count / max(1, self.rows * self.cols))
+        detected_events = self._detect_semantic_events(
+            timestamp=float(timestamp),
+            frame_id=frame_id,
+            revision_id=revision.revision_id,
+            reason_key=reason_key,
+            occluded=bool(occluded),
+            changed_ratio=changed_ratio,
+            mean_tile_delta=mean_tile_delta,
+            max_tile_delta=max_tile_delta,
+        )
 
         frame_state = BoardFrameState(
             frame_id=frame_id,
@@ -126,9 +162,92 @@ class BoardState:
             max_tile_delta=max_tile_delta,
             changed_tile_count=changed_tile_count,
             tile_deltas=tile_deltas,
+            detected_events=detected_events,
         )
         self.frame_history.append(frame_state)
         return changed_versions
+
+    def _detect_semantic_events(
+        self,
+        *,
+        timestamp: float,
+        frame_id: str,
+        revision_id: str,
+        reason_key: str,
+        occluded: bool,
+        changed_ratio: float,
+        mean_tile_delta: float,
+        max_tile_delta: float,
+    ) -> List[str]:
+        detected: List[str] = []
+        if occluded:
+            return detected
+
+        wipe_detected = (
+            reason_key in {"delta", "wipe", "interval"}
+            and changed_ratio >= self.wipe_changed_ratio_threshold
+            and mean_tile_delta >= (self.tile_delta_change_threshold * self.wipe_mean_delta_multiplier)
+        )
+        if wipe_detected:
+            self._register_event(
+                event_type="wipe_detected",
+                timestamp=timestamp,
+                frame_id=frame_id,
+                revision_id=revision_id,
+                details={"changed_ratio": changed_ratio, "mean_tile_delta": mean_tile_delta, "max_tile_delta": max_tile_delta},
+            )
+            detected.append("wipe_detected")
+
+        should_start_section = False
+        section_reason = ""
+        if self._last_section_started_ts is None:
+            should_start_section = True
+            section_reason = "first_frame"
+        elif wipe_detected:
+            should_start_section = True
+            section_reason = "after_wipe"
+        elif (
+            changed_ratio >= self.section_changed_ratio_threshold
+            and max_tile_delta >= (self.tile_delta_change_threshold * self.section_max_delta_multiplier)
+            and (timestamp - (self._last_section_started_ts or 0)) >= self.min_section_gap_seconds
+        ):
+            should_start_section = True
+            section_reason = "large_change"
+
+        if should_start_section:
+            self._section_index += 1
+            section_id = f"sec_{self._section_index:04d}"
+            self._last_section_started_ts = timestamp
+            self._register_event(
+                event_type="section_started",
+                timestamp=timestamp,
+                frame_id=frame_id,
+                revision_id=revision_id,
+                details={"section_id": section_id, "reason": section_reason},
+            )
+            detected.append("section_started")
+        return detected
+
+    def _register_event(
+        self,
+        *,
+        event_type: str,
+        timestamp: float,
+        frame_id: str,
+        revision_id: str,
+        details: Optional[Dict[str, object]] = None,
+    ) -> None:
+        self._event_index += 1
+        self.events.append(
+            BoardSemanticEvent(
+                event_id=f"be_{self._event_index:05d}",
+                event_type=event_type,
+                timestamp=timestamp,
+                frame_id=frame_id,
+                revision_id=revision_id,
+                details=details or {},
+            )
+        )
 
     def _compute_tile_deltas(self, frame: Optional[np.ndarray]) -> Dict[str, float]:
         if frame is None:
@@ -215,6 +334,9 @@ class BoardState:
                 "frame_count": len(self.frame_history),
                 "revision_count": len(self.revisions),
                 "tile_version_count": len(self.versions),
+                "event_count": len(self.events),
+                "section_count": self._section_index,
+                "wipe_count": sum(1 for e in self.events if e.event_type == "wipe_detected"),
                 "last_mean_tile_delta": self.frame_history[-1].mean_tile_delta if self.frame_history else 0.0,
                 "last_max_tile_delta": self.frame_history[-1].max_tile_delta if self.frame_history else 0.0,
             },
@@ -244,7 +366,19 @@ class BoardState:
                     "max_tile_delta": f.max_tile_delta,
                     "changed_tile_count": f.changed_tile_count,
                     "tile_deltas": f.tile_deltas,
+                    "detected_events": f.detected_events,
                 }
                 for f in self.frame_history[-50:]
+            ],
+            "events": [
+                {
+                    "event_id": e.event_id,
+                    "event_type": e.event_type,
+                    "timestamp": e.timestamp,
+                    "frame_id": e.frame_id,
+                    "revision_id": e.revision_id,
+                    "details": e.details,
+                }
+                for e in self.events[-100:]
             ],
         }
