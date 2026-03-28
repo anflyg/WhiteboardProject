@@ -5,4 +5,4 @@ easyocr
 pyttsx3
 PySide6
 sounddevice
-openai-whisper
+faster-whisper

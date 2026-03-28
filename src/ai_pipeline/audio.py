@@ -2,7 +2,7 @@
 Audio handling: recording and transcription.
 
 Recorder prefers sounddevice, then PyAudio; otherwise writes an empty wav.
-Transcriber prefers Whisper if installed; otherwise returns an empty transcript.
+Transcriber prefers faster-whisper if installed; otherwise returns an empty transcript.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import os
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Protocol
+from typing import List, Optional, Protocol
 
 
 @dataclass
@@ -28,7 +28,8 @@ class Transcriber(Protocol):
 class DummyTranscriber:
     """Placeholder that returns an empty transcript."""
 
-    def __init__(self, model_name: str = "medium", language: Optional[str] = None, error: Optional[str] = None) -> None:
+    def __init__(self, model_name: str = "small", language: Optional[str] = None, error: Optional[str] = None) -> None:
+        self.backend_name = "dummy"
         self.model_name = model_name
         self.language = language
         self.error = error
@@ -37,56 +38,51 @@ class DummyTranscriber:
         return []
 
 
-class WhisperTranscriber:
-    """Whisper-based transcriber if the whisper package is available."""
+class FasterWhisperTranscriber:
+    """faster-whisper transcriber if the package is available."""
 
-    def __init__(self, model_name: str = "medium", language: Optional[str] = None) -> None:
-        import whisper  # type: ignore
+    def __init__(self, model_name: str = "small", language: Optional[str] = None) -> None:
+        from faster_whisper import WhisperModel  # type: ignore
 
-        self.model = whisper.load_model(model_name)
+        compute_type = os.getenv("FASTER_WHISPER_COMPUTE_TYPE", "int8")
+        self.model = WhisperModel(model_name, device="auto", compute_type=compute_type)
+        self.backend_name = "faster-whisper"
         self.language = language
 
     def transcribe(self, audio_path: Path) -> List[TranscriptSegment]:
-        kwargs = {"task": "transcribe"}
+        kwargs = {"task": "transcribe", "vad_filter": True}
         if self.language:
             kwargs["language"] = self.language
-        result = self.model.transcribe(str(audio_path), **kwargs)
+        segments_iter, _ = self.model.transcribe(str(audio_path), **kwargs)
         segments: List[TranscriptSegment] = []
-        for seg in result.get("segments", []):
+        for seg in segments_iter:
             segments.append(
-                TranscriptSegment(start=float(seg.get("start", 0.0)), end=float(seg.get("end", 0.0)), text=seg.get("text", "").strip())
+                TranscriptSegment(start=float(seg.start), end=float(seg.end), text=(seg.text or "").strip())
             )
         return segments
 
 
-def _whisper_model_candidates(model_name: str) -> List[Path]:
+def _faster_whisper_model_candidates(model_name: str) -> List[Path]:
     """
-    Build a prioritized list of possible local model paths before falling back to download.
+    Build a prioritized list of possible local model directories before falling back to model name.
     """
-    names = [f"{model_name}.pt", f"{model_name}.pt.bin"]
     candidates: List[Path] = []
 
-    env_path = os.getenv("WHISPER_MODEL_PATH")
+    env_path = os.getenv("FASTER_WHISPER_MODEL_PATH") or os.getenv("WHISPER_MODEL_PATH")
     if env_path:
         p = Path(env_path).expanduser()
-        if p.is_dir():
-            for name in names:
-                candidates.append(p / name)
-        else:
-            candidates.append(p)
+        candidates.append(p)
 
-    env_dir = os.getenv("WHISPER_MODEL_DIR")
+    env_dir = os.getenv("FASTER_WHISPER_MODEL_DIR") or os.getenv("WHISPER_MODEL_DIR")
     if env_dir:
         d = Path(env_dir).expanduser()
-        for name in names:
-            candidates.append(d / name)
+        candidates.append(d / model_name)
 
     project_root = Path(__file__).resolve().parents[2]
     search_roots = [project_root, Path.cwd(), project_root.parent]
     for root in search_roots:
         base = root / "whisper_models"
-        for name in names:
-            candidates.append(base / name)
+        candidates.append(base / model_name)
 
     unique: List[Path] = []
     seen = set()
@@ -98,26 +94,30 @@ def _whisper_model_candidates(model_name: str) -> List[Path]:
 
 
 def _resolve_model_target(model_name: str) -> tuple[str, List[Path]]:
-    candidates = _whisper_model_candidates(model_name)
+    candidates = _faster_whisper_model_candidates(model_name)
     for path in candidates:
-        if path.is_file():
+        if path.exists():
             return str(path), candidates
     return model_name, candidates
 
 
-def make_transcriber(model_name: str = "medium", language: Optional[str] = None) -> Transcriber:
+def make_transcriber(model_name: str = "small", language: Optional[str] = None) -> Transcriber:
     model_target, candidates = _resolve_model_target(model_name)
     try:
-        import whisper  # noqa: F401
+        import faster_whisper  # noqa: F401
 
-        return WhisperTranscriber(model_name=model_target, language=language)
+        return FasterWhisperTranscriber(model_name=model_target, language=language)
     except Exception as exc:
         tried = [str(p) for p in candidates]
         hint = ""
         if tried:
-            hint = "; searched for local model at: " + ", ".join(tried)
-        advice = "Set WHISPER_MODEL_PATH to your downloaded .pt file or place it under whisper_models/."
+            hint = "; searched for local model path at: " + ", ".join(tried)
+        advice = "Install faster-whisper and/or set FASTER_WHISPER_MODEL_PATH/FASTER_WHISPER_MODEL_DIR."
         return DummyTranscriber(model_name=model_name, language=language, error=f"{exc}{hint} {advice}")
+
+
+# Backward-compatible alias for existing imports.
+WhisperTranscriber = FasterWhisperTranscriber
 
 
 class AudioRecorder:

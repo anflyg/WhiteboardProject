@@ -16,7 +16,7 @@ from typing import Optional
 @dataclass
 class PipelineConfig:
     name: str = "recommended"
-    whisper_model: str = "turbo"
+    whisper_model: str = "small"
     ocr_lang: str = "eng+sv"
     whisper_language: Optional[str] = "sv"
     vision_backend: str = "local_basic"
@@ -72,7 +72,7 @@ def default_config(mode: str = "recommended") -> PipelineConfig:
         )
     return PipelineConfig(
         name="recommended",
-        whisper_model="turbo",
+        whisper_model="small",
         vision_backend="local_basic",
         use_cloud_fallback=False,
         ssim_threshold=0.97,

@@ -15,18 +15,29 @@ pip install -r Requirements.txt
 Kräver PySide6 och OpenCV med GUI-stöd (inte `opencv-python-headless`).
 
 Systemkrav:
-- `ffmpeg` behövs för Whisper-transkription (installera t.ex. `brew install ffmpeg` på macOS eller motsvarande på Windows/Linux).
+- `ffmpeg` behövs för transkription via faster-whisper (installera t.ex. `brew install ffmpeg` på macOS eller motsvarande på Windows/Linux).
 
-### Whisper utan nedladdning
-- Standardprofilen är `recommended` och använder Whisper `turbo`.
-- Lägg din nedladdade modellfil (t.ex. `turbo.pt` eller `turbo.pt.bin`) i en mapp `whisper_models/` bredvid projektet, eller peka ut filen med `WHISPER_MODEL_PATH=/full/path/till/turbo.pt`.
-- Alternativt kan du sätta `WHISPER_MODEL_DIR` till en katalog som innehåller modellen.
-- Om ingen lokal fil hittas försöker Whisper annars ladda ner modellen, vilket kan misslyckas utan rätt certifikat/nät.
+### Transkribering (faster-whisper)
+- Standardbackend är `faster-whisper` för lokal transkribering.
+- Standardprofilen är `recommended` och använder modellen `small`.
+- Detta val är gjort för att fungera bättre på en MacBook Air (lättare standardkörning).
+- Du kan ange lokal modellpath med `FASTER_WHISPER_MODEL_PATH=/full/path/till/model-dir` eller modellkatalog med `FASTER_WHISPER_MODEL_DIR=/full/path/till/modeller`.
 
 ### Körprofiler (AI-pipeline)
-- `quick`: lätt/snabbläge (Whisper `tiny`).
-- `recommended` (default): balanserat standardläge (Whisper `turbo`).
-- `full_local`: tyngre lokal kvalitet (Whisper `large`).
+- `quick`: lätt/snabbläge (`tiny`).
+- `recommended` (default): balanserat standardläge (`small`) med `faster-whisper`.
+- `full_local`: tyngre lokal kvalitet (`large`).
+
+### Exportstruktur (sessionspaket)
+Vid stop av AI-inspelning skapas ett exportpaket i `exports/session_YYYY-MM-DD_HH-MM/`:
+- `transcript_sv.txt`
+- `transcript_sv.srt`
+- `board_summary.md`
+- `manifest.json`
+- `timeline.json`
+- `keyframes/`
+
+Om underlag saknas skrivs tydlig placeholder i respektive fil i stället för att filen uteblir.
 
 ## Kör
 ```bash

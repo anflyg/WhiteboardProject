@@ -39,8 +39,7 @@ from src.ai_pipeline import (
     make_transcriber,
     make_recognizer,
     AudioRecorder,
-    render_markdown_document,
-    render_frames_listing,
+    export_session_package,
     AlignBlock,
     align_transcript_with_board,
     TileVersion,
@@ -117,6 +116,7 @@ class WhiteboardWindow(QMainWindow):
         self.board_recognizer = make_recognizer(self.ai_config.vision_backend, lang=getattr(self.ai_config, "ocr_lang", None))
         self.transcriber = make_transcriber(self.ai_config.whisper_model, language=getattr(self.ai_config, "whisper_language", None))
         self.transcriber_is_dummy = self.transcriber.__class__.__name__ == "DummyTranscriber"
+        self.transcriber_backend = getattr(self.transcriber, "backend_name", "unknown")
         self.transcriber_error = getattr(self.transcriber, "error", None)
         self.audio_recorder = AudioRecorder()
         self.session_dir: Optional[Path] = None
@@ -597,8 +597,11 @@ class WhiteboardWindow(QMainWindow):
             self.statusBar().showMessage("FFmpeg saknas – installera via hjälp-menyn för transkription.")
         if self.transcriber_is_dummy:
             extra = f" (fel: {self.transcriber_error})" if self.transcriber_error else ""
-            self.statusBar().showMessage(f"Whisper saknas/laddas ej{extra}; ingen transkription.")
-        profile_msg = f"AI-profil: {self.ai_config.name} | Whisper-modell: {self.ai_config.whisper_model}"
+            self.statusBar().showMessage(f"faster-whisper saknas/laddas ej{extra}; ingen transkription.")
+        profile_msg = (
+            f"AI-profil: {self.ai_config.name} | Modell: {self.ai_config.whisper_model} | "
+            f"Backend: {self.transcriber_backend}"
+        )
         print(f"[AI CONFIG] {profile_msg}", flush=True)
         self.statusBar().showMessage(profile_msg)
         self._style_record_button(active=True)
@@ -630,7 +633,7 @@ class WhiteboardWindow(QMainWindow):
             self.statusBar().showMessage("Ljud-backend saknas, spelar inte in ljud")
         elif self.transcriber_is_dummy:
             self.statusBar().showMessage(
-                f"Ljud inspelas med {self.audio_recorder.backend_name}, men Whisper saknas/ffmpeg saknas (ingen transkription)"
+                f"Ljud inspelas med {self.audio_recorder.backend_name}, men faster-whisper saknas/ffmpeg saknas (ingen transkription)"
             )
         elif not self.ffmpeg_available:
             self.statusBar().showMessage(
@@ -647,15 +650,9 @@ class WhiteboardWindow(QMainWindow):
 
     def _postprocess_session(self) -> None:
         """
-        Minimal postprocess: transcribe audio (stub), align frames, render markdown.
+        Minimal postprocess: transcribe audio, align frames, export stable session package.
         """
         export_root = (Path.cwd() / self.ai_config.export_dir).resolve()
-        run_id = self.manifest.get("run_id", datetime.now().strftime("run-%Y%m%d-%H%M%S"))
-        run_export_dir = export_root / run_id
-        frames_export_dir = run_export_dir / "frames"
-        run_export_dir.mkdir(parents=True, exist_ok=True)
-
-        md_path = run_export_dir / f"{run_id}.md"
 
         transcript = []
         transcript_error = None
@@ -668,48 +665,21 @@ class WhiteboardWindow(QMainWindow):
             transcript_error = "Ingen ljudfil inspelad eller filen är tom."
 
         frames = self.manifest.get("frames", [])
-        copied_frames = []
-        if self.frames_dir and self.frames_dir.exists():
-            frames_export_dir.mkdir(parents=True, exist_ok=True)
-            for f in frames:
-                src = (self.frames_dir / Path(f["path"]).name).resolve()
-                dst = frames_export_dir / src.name
-                try:
-                    if src.exists():
-                        dst.write_bytes(src.read_bytes())
-                        copied_frames.append({"timestamp": f.get("timestamp", 0), "path": str(dst.relative_to(run_export_dir))})
-                except Exception:
-                    pass
-        else:
-            copied_frames = frames
 
-        # Copy audio to export for debugging/fallback
-        exported_audio = None
-        if self.audio_path and self.audio_path.exists():
-            exported_audio = run_export_dir / self.audio_path.name
-            try:
-                exported_audio.write_bytes(self.audio_path.read_bytes())
-            except Exception:
-                exported_audio = None
-
-        # Kör enkel board-recognition på kopierade frames (text vs ritningar)
+        # Kör enkel board-recognition på sessionsframes (text vs ritningar)
         board_tiles: list[TileVersion] = []
-        for f in copied_frames:
+        for f in frames:
             try:
-                frame_path = run_export_dir / f["path"]
+                if not self.session_dir:
+                    continue
+                frame_path = self.session_dir / f["path"]
                 rec = self.board_recognizer.recognize(frame_path)
                 ts = f.get("timestamp", 0)
                 if rec.text:
                     board_tiles.append(TileVersion(tile_id=(0, len(board_tiles)), start=ts, end=ts, text=rec.text, image_path=None))
                 for img_path in rec.images:
-                    img_rel = Path(img_path)
-                    if img_rel.is_absolute():
-                        try:
-                            img_rel = img_rel.relative_to(run_export_dir)
-                        except Exception:
-                            pass
                     board_tiles.append(
-                        TileVersion(tile_id=(0, len(board_tiles)), start=ts, end=ts, text=None, image_path=str(img_rel))
+                        TileVersion(tile_id=(0, len(board_tiles)), start=ts, end=ts, text=None, image_path=str(img_path))
                     )
             except Exception:
                 continue
@@ -719,34 +689,26 @@ class WhiteboardWindow(QMainWindow):
                 blocks = align_transcript_with_board(transcript, board_tiles)
             else:
                 blocks = [AlignBlock(start=seg.start, end=seg.end, speech_text=seg.text, board_text=[], board_images=[]) for seg in transcript]
-            render_markdown_document(blocks, md_path)
         else:
-            # Fallback: bara lista frames.
-            render_frames_listing(copied_frames, md_path)
-            if transcript_error:
-                try:
-                    with md_path.open("a", encoding="utf-8") as f:
-                        f.write("\n\n_No transcript available: " + transcript_error + "_\n")
-                except Exception:
-                    pass
-            elif self.transcriber_is_dummy:
-                try:
-                    with md_path.open("a", encoding="utf-8") as f:
-                        detail = f" ({self.transcriber_error})" if self.transcriber_error else ""
-                        f.write(f"\n\n_No transcript available: Whisper saknas eller kunde inte laddas{detail}._\n")
-                except Exception:
-                    pass
+            blocks = []
 
-        # Append metadata
+        detail = f" ({self.transcriber_error})" if self.transcriber_error else ""
+        effective_transcript_error = transcript_error
+        if not effective_transcript_error and self.transcriber_is_dummy:
+            effective_transcript_error = f"faster-whisper saknas eller kunde inte laddas{detail}."
+
         try:
-            with md_path.open("a", encoding="utf-8") as f:
-                f.write("\n\n---\n")
-                f.write(f"Audio backend: {self.audio_recorder.backend_name}\n")
-                f.write(f"Transcriber: {'dummy' if self.transcriber_is_dummy else 'whisper'}\n")
-                if exported_audio:
-                    f.write(f"Audio file: {exported_audio.name}\n")
-        except Exception:
-            pass
+            export_dir = export_session_package(
+                export_root,
+                source_session_dir=self.session_dir,
+                session_manifest=self.manifest,
+                transcript=transcript,
+                align_blocks=blocks,
+                transcript_error=effective_transcript_error,
+            )
+            self.statusBar().showMessage(f"Export skapad: {export_dir.name}")
+        except Exception as exc:
+            self.statusBar().showMessage(f"Export misslyckades: {exc}")
 
         # Cleanup intermediates if configured
         if not self.ai_config.keep_intermediates and self.session_dir:
@@ -771,6 +733,7 @@ class WhiteboardWindow(QMainWindow):
             "started_at": datetime.now().isoformat(),
             "profile": self.ai_config.name,
             "whisper_model": self.ai_config.whisper_model,
+            "transcription_backend": self.transcriber_backend,
             "capture_dir": str(self.session_dir),
             "audio": "audio.wav",
             "frames": [],
@@ -819,7 +782,7 @@ class WhiteboardWindow(QMainWindow):
 
     def _show_ffmpeg_help(self) -> None:
         msg = (
-            "ffmpeg krävs för transkription (Whisper).\n\n"
+            "ffmpeg krävs för transkription (faster-whisper).\n\n"
             "macOS:\n"
             "  1) Installera Homebrew (om saknas):\n"
             "     /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"\n"

@@ -9,7 +9,7 @@ from .frames import FrameEvent, FrameExtractor
 from .board_state import TileVersion, BoardState
 from .vision import BoardRecognizer, BoardRecognitionResult, make_recognizer, BasicBoardRecognizer, DummyBoardRecognizer
 from .align import AlignBlock, align_transcript_with_board
-from .export import render_markdown_document, render_frames_listing
+from .export import render_markdown_document, render_frames_listing, export_session_package
 from .config import PipelineConfig, load_config, default_config
 
 __all__ = [
@@ -31,6 +31,7 @@ __all__ = [
     "align_transcript_with_board",
     "render_markdown_document",
     "render_frames_listing",
+    "export_session_package",
     "PipelineConfig",
     "load_config",
     "default_config",

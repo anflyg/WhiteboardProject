@@ -39,7 +39,7 @@ python src/main.py --list-cameras        # lista kameror och avsluta
 - `src/state.py` – AppState och inputhantering.
 - `src/ai_pipeline/` – ljud, frames, tile-state, vision-backend, align, export, config.
 - `captures/run-*/` – temporära sessioner (ljud, frames, manifest).
-- `exports/run-*/` – färdiga exports (Markdown + frames + kopierad audio).
+- `exports/session_*/` – färdiga exportsessioner för ChatGPT-underlag.
 
 ## AI-pipelinen (designsammanfattning)
 - **Audio:** `AudioRecorder` spelar in WAV; `Transcriber`/`WhisperTranscriber` transkriberar med tidsstämplar.
@@ -69,7 +69,7 @@ python src/main.py --list-cameras        # lista kameror och avsluta
 ## Session och robusthet
 - Inspelning sparas under `captures/run-<timestamp>/` (ljud, frames, manifest).
 - Inkrementella manifest/loggar för att kunna återuppta efter krasch; rensa först när export är klar (styrt av `keep_intermediates`).
-- Export kopierar frames + audio till `exports/run-<timestamp>/` för spårbarhet.
+- Export skapar ett stabilt sessionspaket under `exports/session_YYYY-MM-DD_HH-MM/`.
 
 ## Prestanda och resurser
 - Snabb sampling/SSIM på CPU med nedskalade frames; tiles minskar OCR-belastning.
@@ -84,7 +84,7 @@ python src/main.py --list-cameras        # lista kameror och avsluta
 ## Körflöde (inspelning → export)
 1) Starta AI-inspelning i appen (REC). Skapar `captures/run-<ts>/` med audio + frames.
 2) Under inspelning: FrameExtractor triggar keyframes (förändring eller fallback). Audio spelas in parallellt.
-3) Stoppa inspelning: postprocess körs – transkription, align, och export av Markdown till `exports/run-<ts>/`.
+3) Stoppa inspelning: postprocess körs – transkription, align, och export till `exports/session_YYYY-MM-DD_HH-MM/`.
 4) Export inkluderar kopierade frames och audio för spårbarhet.
 
 ## Vidareutveckling (ur design.md)
@@ -201,7 +201,7 @@ classDiagram
 ## Status och backlog (2025-12-13)
 - [x] Grundapp (PySide6) med kamera/keystone/zoom och capture-knappar.
 - [x] Inspelning av ljud (sounddevice/PyAudio om finns, annars tom WAV) och rammanifest (`captures/run-*/manifest.json`).
-- [x] FrameExtractor med enkel delta/fallback + export av frames och audio till `exports/run-*/` samt minimal align (närmsta bild till varje transcript-segment).
+- [x] FrameExtractor med enkel delta/fallback + export till stabil sessionsstruktur under `exports/session_*/`.
 - [x] Manifest förbättrat: lagrar orsak (delta/interval/wipe/too_soon) och delta-värde per frame; hoppar över mörka/occluded frames.
 - [x] Qt-startfix: sätter QT-plugin- och DYLD-sökvägar i koden istället för exec-restart.
 - [x] Whisper språkstyrning: default svenska via `whisper_language` (kan ändras i config/env).
