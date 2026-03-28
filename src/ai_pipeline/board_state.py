@@ -6,7 +6,9 @@ First practical version for tracking board state over time.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 
 @dataclass
@@ -28,6 +30,10 @@ class BoardFrameState:
     occluded: bool
     frame_path: Optional[str]
     revision_id: str
+    mean_tile_delta: float
+    max_tile_delta: float
+    changed_tile_count: int
+    tile_deltas: Dict[str, float]
 
 
 @dataclass
@@ -48,10 +54,12 @@ class BoardState:
         rows: int = 3,
         cols: int = 4,
         stabilization_seconds: float = 0.8,
+        tile_delta_change_threshold: float = 6.0,
     ) -> None:
         self.rows = rows
         self.cols = cols
         self.stabilization_seconds = stabilization_seconds
+        self.tile_delta_change_threshold = tile_delta_change_threshold
         self.versions: List[TileVersion] = []
         self.frame_history: List[BoardFrameState] = []
         self.revisions: List[BoardRevision] = []
@@ -59,6 +67,7 @@ class BoardState:
         self._revision_index = 0
         self._open_revision_id: Optional[str] = None
         self._open_tile_version: Optional[TileVersion] = None
+        self._last_gray_frame: Optional[np.ndarray] = None
 
     def update_frame(
         self,
@@ -67,6 +76,7 @@ class BoardState:
         reason: str = "",
         delta: float = 0.0,
         occluded: bool = False,
+        frame: Optional[np.ndarray] = None,
     ) -> List[TileVersion]:
         """
         Register a keyframe/frame-event in the board timeline.
@@ -98,7 +108,13 @@ class BoardState:
         if occluded:
             revision.occluded_frames += 1
 
-        frame = BoardFrameState(
+        tile_deltas = self._compute_tile_deltas(frame)
+        delta_values = list(tile_deltas.values())
+        mean_tile_delta = float(np.mean(delta_values)) if delta_values else 0.0
+        max_tile_delta = float(np.max(delta_values)) if delta_values else 0.0
+        changed_tile_count = sum(1 for d in delta_values if d >= self.tile_delta_change_threshold)
+
+        frame_state = BoardFrameState(
             frame_id=frame_id,
             timestamp=float(timestamp),
             reason=reason or "",
@@ -106,9 +122,46 @@ class BoardState:
             occluded=bool(occluded),
             frame_path=frame_path,
             revision_id=revision.revision_id,
+            mean_tile_delta=mean_tile_delta,
+            max_tile_delta=max_tile_delta,
+            changed_tile_count=changed_tile_count,
+            tile_deltas=tile_deltas,
         )
-        self.frame_history.append(frame)
+        self.frame_history.append(frame_state)
         return changed_versions
+
+    def _compute_tile_deltas(self, frame: Optional[np.ndarray]) -> Dict[str, float]:
+        if frame is None:
+            return {}
+        if frame.ndim == 3:
+            gray = np.mean(frame.astype(np.float32), axis=2)
+        elif frame.ndim == 2:
+            gray = frame.astype(np.float32)
+        else:
+            return {}
+
+        row_blocks = np.array_split(gray, self.rows, axis=0)
+        prev_row_blocks = np.array_split(self._last_gray_frame, self.rows, axis=0) if self._last_gray_frame is not None else None
+        tile_deltas: Dict[str, float] = {}
+        for r, row_block in enumerate(row_blocks):
+            col_blocks = np.array_split(row_block, self.cols, axis=1)
+            for c, tile in enumerate(col_blocks):
+                tile_id = f"{r},{c}"
+                if tile.size == 0:
+                    tile_deltas[tile_id] = 0.0
+                    continue
+                if self._last_gray_frame is None:
+                    tile_deltas[tile_id] = 0.0
+                else:
+                    prev_col_blocks = np.array_split(prev_row_blocks[r], self.cols, axis=1)
+                    prev_tile = prev_col_blocks[c]
+                    if prev_tile.shape != tile.shape:
+                        tile_deltas[tile_id] = float("inf")
+                    else:
+                        tile_deltas[tile_id] = float(np.mean(np.abs(tile - prev_tile)))
+
+        self._last_gray_frame = gray
+        return tile_deltas
 
     def _should_start_new_revision(self, reason_key: str) -> bool:
         return reason_key in {"first", "delta", "interval", "wipe"}
@@ -158,9 +211,12 @@ class BoardState:
                 "rows": self.rows,
                 "cols": self.cols,
                 "stabilization_seconds": self.stabilization_seconds,
+                "tile_delta_change_threshold": self.tile_delta_change_threshold,
                 "frame_count": len(self.frame_history),
                 "revision_count": len(self.revisions),
                 "tile_version_count": len(self.versions),
+                "last_mean_tile_delta": self.frame_history[-1].mean_tile_delta if self.frame_history else 0.0,
+                "last_max_tile_delta": self.frame_history[-1].max_tile_delta if self.frame_history else 0.0,
             },
             "revisions": [
                 {
@@ -184,6 +240,10 @@ class BoardState:
                     "occluded": f.occluded,
                     "frame_path": f.frame_path,
                     "revision_id": f.revision_id,
+                    "mean_tile_delta": f.mean_tile_delta,
+                    "max_tile_delta": f.max_tile_delta,
+                    "changed_tile_count": f.changed_tile_count,
+                    "tile_deltas": f.tile_deltas,
                 }
                 for f in self.frame_history[-50:]
             ],
